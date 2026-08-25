@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "required": [
+    "intent",
+    "appName",
+    "durationMs",
+    "switchIntervalMs",
+    "intervalMs",
+    "destination",
+    "field",
+    "message",
+    "reason",
+    "language",
+    "openFirstAvailable",
+    "requiresCurrentLiveRoom",
+    "originalText"
+  ],
+  "properties": {
+    "intent": {
+      "type": "string",
+      "enum": [
+        "launch_app",
+        "watch_feed",
+        "watch_live",
+        "live_entry",
+        "play_tencent_video",
+        "play_generic_media",
+        "amap_navigation",
+        "wechat_channels_feed",
+        "doubao_chat",
+        "ai_chat",
+        "back",
+        "home",
+        "missing_parameter",
+        "unsupported_flow",
+        "unknown"
+      ]
+    },
+    "appName": { "type": ["string", "null"] },
+    "durationMs": { "type": ["number", "null"] },
+    "switchIntervalMs": { "type": ["number", "null"] },
+    "intervalMs": { "type": ["number", "null"] },
+    "destination": { "type": ["string", "null"] },
+    "field": { "type": ["string", "null"] },
+    "message": { "type": ["string", "null"] },
+    "reason": { "type": ["string", "null"] },
+    "language": { "type": ["string", "null"] },
+    "openFirstAvailable": { "type": ["boolean", "null"] },
+    "requiresCurrentLiveRoom": { "type": ["boolean", "null"] },
+    "originalText": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

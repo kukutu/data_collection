@@ -1,0 +1,417 @@
+[
+  {
+    "id": "douyin",
+    "name": "抖音",
+    "aliases": ["抖音", "抖音短视频", "抖音直播", "抖音支付"],
+    "packageName": "com.ss.android.ugc.aweme",
+    "categories": ["短视频", "直播", "支付"],
+    "skill": "short_video_feed"
+  },
+  {
+    "id": "xiaohongshu",
+    "name": "小红书",
+    "aliases": ["小红书", "小红书视频", "xhs", "XHS", "xhs视频"],
+    "packageName": "com.xingin.xhs",
+    "categories": ["短视频", "直播"],
+    "skill": "short_video_feed"
+  },
+  {
+    "id": "kuaishou",
+    "name": "快手",
+    "aliases": ["快手"],
+    "packageName": "com.smile.gifmaker",
+    "categories": ["短视频", "直播"],
+    "skill": "short_video_feed"
+  },
+  {
+    "id": "bilibili",
+    "name": "B站",
+    "aliases": ["B站", "哔哩哔哩", "bilibili", "B站短视频", "B站直播"],
+    "packageName": "tv.danmaku.bili",
+    "categories": ["短视频", "长视频", "直播"],
+    "skill": "bilibili_playback"
+  },
+  {
+    "id": "xigua",
+    "name": "西瓜视频",
+    "aliases": ["西瓜视频"],
+    "packageName": "com.ss.android.article.video",
+    "categories": ["短视频"],
+    "skill": "short_video_feed"
+  },
+  {
+    "id": "toutiao",
+    "name": "头条",
+    "aliases": ["头条", "今日头条"],
+    "packageName": "com.ss.android.article.news",
+    "categories": ["短视频"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "wechat",
+    "name": "微信",
+    "aliases": ["微信", "微信直播", "微信视频号", "微信视频号直播", "微信音视频通话", "微信发图/发视频", "微信棋牌类小程序", "抢红包"],
+    "packageName": "com.tencent.mm",
+    "categories": ["VoIP", "短视频", "直播", "支付", "小程序", "传输", "出行", "抢红包"],
+    "skill": "wechat_channels_feed"
+  },
+  {
+    "id": "qq",
+    "name": "QQ",
+    "aliases": ["QQ", "QQ音视频通话"],
+    "packageName": "com.tencent.mobileqq",
+    "categories": ["VoIP"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "dingtalk",
+    "name": "钉钉",
+    "aliases": ["钉钉", "钉钉会议", "钉钉音视频通话"],
+    "packageName": "com.alibaba.android.rimet",
+    "categories": ["VoIP", "会议"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "wecom",
+    "name": "企业微信",
+    "aliases": ["企业微信", "企业微信音视频通话"],
+    "packageName": "com.tencent.wework",
+    "categories": ["VoIP"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "meetime",
+    "name": "畅连",
+    "aliases": ["畅连", "畅连音视频通话"],
+    "packageName": "com.huawei.meetime",
+    "categories": ["VoIP"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "tencent-meeting",
+    "name": "腾讯会议",
+    "aliases": ["腾讯会议"],
+    "packageName": "com.tencent.wemeet.app",
+    "categories": ["会议"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "feishu",
+    "name": "飞书",
+    "aliases": ["飞书", "飞书会议"],
+    "packageName": "com.ss.android.lark",
+    "categories": ["会议"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "welink",
+    "name": "welink",
+    "aliases": ["welink", "welink会议", "welink发图/发视频"],
+    "packageName": "com.huawei.works",
+    "categories": ["会议", "传输"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "tencent-video",
+    "name": "腾讯视频",
+    "aliases": ["腾讯视频"],
+    "packageName": "com.tencent.qqlive",
+    "categories": ["长视频"],
+    "skill": "tencent_video_playback"
+  },
+  {
+    "id": "iqiyi",
+    "name": "爱奇艺",
+    "aliases": ["爱奇艺", "爱奇艺体育"],
+    "packageName": "com.qiyi.video",
+    "categories": ["长视频", "直播"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "youku",
+    "name": "优酷视频",
+    "aliases": ["优酷", "优酷视频"],
+    "packageName": "com.youku.phone",
+    "categories": ["长视频"],
+    "skill": "generic_media_playback"
+  },
+  {
+    "id": "mango-tv",
+    "name": "芒果TV",
+    "aliases": ["芒果TV", "芒果"],
+    "packageName": "com.hunantv.imgo.activity",
+    "categories": ["长视频"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "migu-video",
+    "name": "咪咕视频",
+    "aliases": ["咪咕视频"],
+    "packageName": "com.cmcc.cmvideo",
+    "categories": ["长视频", "直播"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "yangshipin",
+    "name": "央视频",
+    "aliases": ["央视频"],
+    "packageName": "com.cctv.yangshipin.app.androidp",
+    "categories": ["长视频"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "huawei-video",
+    "name": "华为视频",
+    "aliases": ["华为视频"],
+    "packageName": "com.huawei.himovie",
+    "categories": ["长视频"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "huya",
+    "name": "虎牙",
+    "aliases": ["虎牙", "虎牙直播"],
+    "packageName": "com.duowan.kiwi",
+    "categories": ["直播"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "douyu",
+    "name": "斗鱼",
+    "aliases": ["斗鱼", "斗鱼直播"],
+    "packageName": "air.tv.douyu.android",
+    "categories": ["直播"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "taobao",
+    "name": "淘宝",
+    "aliases": ["淘宝", "点淘", "淘宝（点淘）"],
+    "packageName": "com.taobao.taobao",
+    "categories": ["直播"],
+    "skill": "live_entry"
+  },
+  {
+    "id": "jd",
+    "name": "京东",
+    "aliases": ["京东", "京东直播", "京东支付"],
+    "packageName": "com.jingdong.app.mall",
+    "categories": ["电商", "直播", "支付"],
+    "skill": "live_entry"
+  },
+  {
+    "id": "tencent-sports",
+    "name": "腾讯体育",
+    "aliases": ["腾讯体育", "腾讯体育直播"],
+    "packageName": "com.tencent.qqsports",
+    "categories": ["直播"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "weibo",
+    "name": "微博",
+    "aliases": ["微博"],
+    "packageName": "com.sina.weibo",
+    "categories": ["社交"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "alipay",
+    "name": "支付宝",
+    "aliases": ["支付宝", "支付宝支付"],
+    "packageName": "com.eg.android.AlipayGphone",
+    "categories": ["支付", "出行"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "unionpay",
+    "name": "云闪付",
+    "aliases": ["云闪付"],
+    "packageName": "com.unionpay",
+    "categories": ["支付"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "huawei-wallet",
+    "name": "华为钱包",
+    "aliases": ["华为钱包"],
+    "packageName": "com.huawei.wallet",
+    "categories": ["支付"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "meituan",
+    "name": "美团",
+    "aliases": ["美团"],
+    "packageName": "com.sankuai.meituan",
+    "categories": ["支付", "出行"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "honor-of-kings",
+    "name": "王者荣耀",
+    "aliases": ["王者荣耀"],
+    "packageName": "com.tencent.tmgp.sgame",
+    "categories": ["游戏"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "peace-elite",
+    "name": "和平精英",
+    "aliases": ["和平精英"],
+    "packageName": "com.tencent.tmgp.pubgmhd",
+    "categories": ["游戏"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "delta-force",
+    "name": "三角洲行动",
+    "aliases": ["三角洲行动"],
+    "packageName": "com.tencent.tmgp.dfm",
+    "categories": ["游戏"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "amap",
+    "name": "高德地图",
+    "aliases": ["高德", "高德地图"],
+    "packageName": "com.autonavi.minimap",
+    "categories": ["导航", "出行"],
+    "skill": "amap_navigation"
+  },
+  {
+    "id": "baidu-map",
+    "name": "百度地图",
+    "aliases": ["百度地图"],
+    "packageName": "com.baidu.BaiduMap",
+    "categories": ["导航"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "petal-map",
+    "name": "花瓣地图",
+    "aliases": ["花瓣地图"],
+    "packageName": "com.huawei.maps.app",
+    "categories": ["导航"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "didi",
+    "name": "滴滴",
+    "aliases": ["滴滴"],
+    "packageName": "com.sdu.didi.psnger",
+    "categories": ["出行"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "didi-driver",
+    "name": "滴滴车主",
+    "aliases": ["滴滴车主"],
+    "packageName": "com.didichuxing.driver",
+    "categories": ["抢单"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "meituan-rider",
+    "name": "美团骑手",
+    "aliases": ["美团骑手"],
+    "packageName": "com.sankuai.meituan.dispatch.homebrew",
+    "categories": ["抢单"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "fengniao",
+    "name": "蜂鸟众包",
+    "aliases": ["蜂鸟众包"],
+    "packageName": "me.ele.crowdsource",
+    "categories": ["抢单"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "railway-12306",
+    "name": "12306",
+    "aliases": ["12306"],
+    "packageName": "com.MobileTicket",
+    "categories": ["出行", "抢票"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "damai",
+    "name": "大麦",
+    "aliases": ["大麦", "大麦演出"],
+    "packageName": "cn.damai",
+    "categories": ["抢票"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "maoyan",
+    "name": "猫眼演出",
+    "aliases": ["猫眼", "猫眼演出"],
+    "packageName": "com.sankuai.movie",
+    "categories": ["抢票"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "app-store",
+    "name": "应用市场",
+    "aliases": ["应用市场", "应用商店"],
+    "packageName": "com.bbk.appstore",
+    "categories": ["上传下载"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "xunlei",
+    "name": "迅雷",
+    "aliases": ["迅雷"],
+    "packageName": "com.xunlei.downloadprovider",
+    "categories": ["上传下载"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "baidu-netdisk",
+    "name": "百度网盘",
+    "aliases": ["百度网盘"],
+    "packageName": "com.baidu.netdisk",
+    "categories": ["上传下载"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "doubao",
+    "name": "豆包",
+    "aliases": ["豆包"],
+    "packageName": "com.larus.nova",
+    "categories": ["AI应用"],
+    "skill": "doubao_chat",
+    "skillConfig": {
+      "resources": {
+        "closeButton": "com.larus.nova:id/close_btn",
+        "input": "com.larus.nova:id/input_text",
+        "send": "com.larus.nova:id/action_send"
+      }
+    }
+  },
+  {
+    "id": "deepseek",
+    "name": "deepseek",
+    "aliases": ["deepseek", "DeepSeek", "深度求索"],
+    "packageName": "com.deepseek.chat",
+    "categories": ["AI应用"],
+    "skill": "launch_only"
+  },
+  {
+    "id": "qianwen",
+    "name": "千问",
+    "aliases": ["千问", "通义千问"],
+    "packageName": "com.aliyun.tongyi",
+    "categories": ["AI应用"],
+    "skill": "ai_chat"
+  },
+  {
+    "id": "xiaoyi",
+    "name": "小艺",
+    "aliases": ["小艺"],
+    "packageName": "com.huawei.vassistant",
+    "categories": ["AI应用"],
+    "skill": "launch_only"
+  }
+]

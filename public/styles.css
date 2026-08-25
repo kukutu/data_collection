@@ -1,0 +1,320 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, "Microsoft YaHei", sans-serif;
+  background: #eef2f3;
+  color: #1b1f23;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 26px;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 16px;
+}
+
+h3 {
+  margin: 0;
+  font-size: 13px;
+  color: #59636e;
+}
+
+#deviceLine {
+  margin-top: 6px;
+  color: #59636e;
+  font-size: 14px;
+}
+
+.status-pill {
+  min-width: 96px;
+  text-align: center;
+  padding: 8px 12px;
+  border: 1px solid #c5ccd3;
+  border-radius: 8px;
+  background: #fff;
+  color: #59636e;
+}
+
+.status-pill.connected {
+  border-color: #2f855a;
+  color: #276749;
+  background: #f0fff4;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(320px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.command-panel,
+.side-panel {
+  background: #ffffff;
+  border: 1px solid #d4dbe2;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.command-panel {
+  display: grid;
+  gap: 14px;
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  color: #3e4852;
+  font-size: 14px;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid #b9c3cd;
+  border-radius: 6px;
+  padding: 10px 11px;
+  color: #15191d;
+  background: #fbfcfd;
+}
+
+textarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.toggle input {
+  width: 18px;
+  height: 18px;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quick-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.quick-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.quick-group {
+  display: grid;
+  gap: 7px;
+}
+
+.quick-group button {
+  width: 100%;
+}
+
+button {
+  min-height: 40px;
+  border: 1px solid #175cd3;
+  border-radius: 6px;
+  background: #1f6feb;
+  color: #fff;
+  cursor: pointer;
+}
+
+button.secondary {
+  border-color: #b9c3cd;
+  background: #f7f9fb;
+  color: #25313c;
+}
+
+.quick-group button {
+  border-color: #b9c3cd;
+  background: #f7f9fb;
+  color: #25313c;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.task-dialog,
+.confirm-dialog {
+  width: min(420px, calc(100vw - 28px));
+  border: 1px solid #c5ccd3;
+  border-radius: 8px;
+  padding: 0;
+  background: #fff;
+  color: #1b1f23;
+}
+
+.task-dialog::backdrop,
+.confirm-dialog::backdrop {
+  background: rgba(15, 23, 32, 0.36);
+}
+
+.task-dialog-form,
+.confirm-dialog-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.dialog-title,
+.dialog-actions,
+.field-row {
+  display: grid;
+  gap: 10px;
+}
+
+.dialog-title {
+  grid-template-columns: 1fr 40px;
+  align-items: center;
+}
+
+.field-row {
+  grid-template-columns: 1fr 120px;
+}
+
+.dialog-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.icon-button {
+  min-height: 36px;
+  width: 40px;
+  border-color: #b9c3cd;
+  background: #f7f9fb;
+  color: #25313c;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.dialog-message {
+  min-height: 18px;
+  color: #9a3412;
+  font-size: 13px;
+}
+
+.confirm-dialog {
+  width: min(460px, calc(100vw - 28px));
+}
+
+.confirm-dialog-form h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.confirm-dialog-form p {
+  margin: 0;
+  color: #4b5563;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.confirm-actions {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.7fr) minmax(0, 1.3fr);
+  gap: 10px;
+}
+
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-title span {
+  color: #59636e;
+  font-size: 13px;
+}
+
+#logs {
+  height: 300px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #d4dbe2;
+  border-radius: 6px;
+  background: #0f1720;
+  color: #dce7f3;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    padding: 14px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .confirm-actions {
+    grid-template-columns: 1fr;
+  }
+
+}

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>手机控制台</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>手机控制台</h1>
+          <p id="deviceLine">检测设备中</p>
+        </div>
+        <div class="status-pill" id="statusPill">未连接</div>
+      </header>
+
+      <section class="workspace">
+        <form class="command-panel" id="taskForm">
+          <label>
+            API Key
+            <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+          </label>
+
+          <label>
+            解析模式
+            <select id="parseMode">
+              <option value="rules">本地规则</option>
+              <option value="api">API 模型</option>
+              <option value="codex">本机 Codex</option>
+            </select>
+          </label>
+
+          <label>
+            任务
+            <textarea id="taskText" rows="4">刷30秒抖音</textarea>
+          </label>
+
+          <div class="actions">
+            <button type="submit">开始</button>
+            <button type="button" id="stopBtn" class="secondary">停止</button>
+          </div>
+
+          <section class="quick-panel" aria-label="快捷任务">
+            <h2>快捷任务</h2>
+            <div class="quick-groups">
+              <section class="quick-group">
+                <h3>短视频</h3>
+                <button type="button" data-builder="short-video">刷短视频</button>
+              </section>
+
+              <section class="quick-group">
+                <h3>长视频</h3>
+                <button type="button" data-builder="long-video">播放视频</button>
+              </section>
+
+              <section class="quick-group">
+                <h3>直播</h3>
+                <button type="button" data-builder="live">直播浏览</button>
+              </section>
+
+              <section class="quick-group">
+                <h3>导航</h3>
+                <button type="button" data-builder="navigation">地图导航</button>
+              </section>
+
+              <section class="quick-group">
+                <h3>AI 应用</h3>
+                <button type="button" data-builder="ai-chat">AI 对话</button>
+              </section>
+
+              <section class="quick-group">
+                <h3>系统</h3>
+                <button type="button" data-command="回到桌面">回桌面</button>
+              </section>
+            </div>
+          </section>
+        </form>
+
+        <section class="side-panel">
+          <div class="panel-title">
+            <h2>执行</h2>
+            <span id="taskState">空闲</span>
+          </div>
+          <pre id="logs"></pre>
+        </section>
+      </section>
+    </main>
+
+    <dialog class="task-dialog" id="quickTaskDialog">
+      <form method="dialog" class="task-dialog-form">
+        <div class="dialog-title">
+          <h2 id="dialogTitle">配置任务</h2>
+          <button type="button" class="icon-button" id="dialogCloseBtn" aria-label="关闭">×</button>
+        </div>
+
+        <label>
+          App
+          <select id="builderApp"></select>
+        </label>
+
+        <div class="field-row">
+          <label>
+            时长
+            <input id="builderDuration" type="number" min="1" step="1" value="30">
+          </label>
+          <label>
+            单位
+            <select id="builderUnit">
+              <option value="秒">秒</option>
+              <option value="分钟">分钟</option>
+              <option value="小时">小时</option>
+            </select>
+          </label>
+        </div>
+
+        <label id="builderDestinationWrap" hidden>
+          目的地
+          <input id="builderDestination" type="text" value="北京站">
+        </label>
+
+        <p class="dialog-message" id="builderMessage"></p>
+
+        <div class="dialog-actions">
+          <button type="button" class="secondary" id="fillTaskBtn">生成任务文本</button>
+          <button type="button" id="runBuiltTaskBtn">开始执行</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="confirmDialog">
+      <form method="dialog" class="confirm-dialog-form">
+        <h2>等待人工确认</h2>
+        <p id="confirmMessage"></p>
+        <div class="confirm-actions">
+          <button type="button" class="secondary" id="confirmStopBtn">停止任务</button>
+          <button type="button" id="continueBtn">我已点入视频，继续</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
