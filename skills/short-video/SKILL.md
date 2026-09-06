@@ -1,14 +1,23 @@
 ---
 name: short-video
-description: Use when implementing, maintaining, or operating passive short-video feed browsing skills in data_collect_agent, including Douyin, Xiaohongshu, Kuaishou, Bilibili-style feeds, bounded watch durations, and swipe-only feed progression.
+description: Use when implementing, maintaining, or operating bounded short-video feed browsing in data_collect_agent, including App-specific entry, validation, capture timing, and swipe-only progression.
 ---
 
 # Short Video
 
-Keep the skill folder as repo-level guidance for the runtime implementation in `server/src/skills/short-video.js`.
+Runtime implementation lives in `server/src/skills/short-video.js`; WeChat video channels use `server/src/skills/wechat-channels.js`.
 
-Use this skill for passive browsing commands such as `刷30分钟抖音` or `浏览10分钟小红书`. The runtime should resolve the app from `data/apps.json`, launch the package, wait for loading, then alternate bounded waits with upward swipes until the requested duration is reached.
+For commands such as `刷30分钟抖音`:
 
-Generate only passive actions: `launch_app`, `wait`, `swipe`, and `complete`. Do not tap like, follow, comment, share, buy, upload, login, or interact with creators or recommendations beyond normal feed scrolling.
+1. Resolve the App from `data/apps.json`.
+2. Launch or reach the video content.
+3. Handle only allowlisted non-sensitive prompts.
+4. Confirm foreground App and, where available, screen motion.
+5. Execute `start_capture`.
+6. Alternate bounded waits and upward swipes until the requested duration ends.
 
-Derive swipe coordinates from the current screen size when possible. Use the fallback screen size only when ADB cannot report dimensions.
+Xiaohongshu currently uses manual confirmation to enter a video or note detail before capture. Douyin uses a fast launch path. Other apps use the generic entry checks.
+
+Coordinates must derive from the current screen size or carry a `referenceScreen`; do not add raw device-specific coordinates without scaling metadata.
+
+Do not like, follow, comment, share, buy, upload, log in, or interact with creators beyond passive feed scrolling.

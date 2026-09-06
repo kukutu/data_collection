@@ -1,668 +1,429 @@
-﻿# 当前实现方案说明
+# 当前实现方案
 
-本文档整理当前手机自动操作控制台的实现方式、模块职责、执行链路、prompt 与 skill 的分工、安全边界，以及接入流量采集 agent 的方案。
+本文档描述截至 2026-09-06 的现役实现。用户操作说明以根目录 `README.md` 为准；本文件只解释架构、状态机、数据边界和已知限制。
 
-## 1. 目标定位
+## 1. 系统边界
 
-当前系统是一个本地 Web 控制台，用来把用户输入的文本任务转换为受控的 Android ADB 操作。
-
-典型任务包括：
-
-- 打开指定 App，例如“打开抖音”“打开小红书”。
-- 被动浏览短视频，例如“刷 10 分钟抖音”。
-- 在已进入直播间的前提下，定时上滑切换直播间。
-- 返回、回到桌面、查询设备状态、查看执行日志。
-
-系统不是让模型直接控制终端，而是采用：
+系统是本地运行的手机自动化与流量采集控制台：
 
 ```text
-前端输入任务
-  -> 后端解析 intent
-  -> 安全策略检查
-  -> 选择固定 skill
-  -> skill 生成动作序列
-  -> ADB allowlist 执行
-  -> 前端轮询日志和状态
+网页任务或参数化工作流
+  -> 规则/API/Codex 解析
+  -> 安全策略
+  -> 固定业务 skill
+  -> ADB/HDC 设备控制
+  -> 到达目标业务状态
+  -> tshark + 端口映射 + 屏幕录制
+  -> 任务收尾、拉取文件、可选提取、报告
 ```
 
-## 2. 技术栈
+模型不直接控制 shell 或手机。任务模型只生成受 schema 限制的 intent；轨迹纠正模型只返回动作白名单内的修正结果。
 
-当前实现尽量保持轻量，没有引入 Express、Vite、React 等依赖。
+## 2. 技术栈和入口
 
-- 运行时：Node.js ESM
-- 后端：Node 原生 `http` 服务
-- 前端：静态 HTML/CSS/JS
-- 手机控制：ADB
-- 模型调用：`fetch` 调用 `OPENAI_BASE_URL` 下的 `/responses`
-- 应用配置：`data/apps.json`
-- 运行配置：`server/src/config.js`
+- Node.js ESM
+- Node 原生 `http`
+- 静态 HTML/CSS/JavaScript
+- ADB 与 HDC
+- tshark/Wireshark
+- HarmonyOS 系统录屏，失败时截图加 FFmpeg 合成
+- OpenAI-compatible Responses API 或本机 Codex CLI
 
-启动方式：
-
-```powershell
-npm start
-```
-
-默认监听：
+入口：
 
 ```text
-http://localhost:5177
+package.json              npm start / npm test
+server/index.js           HTTP 路由和依赖装配
+public/index.html         用户界面
+server/src/config.js      环境变量和本机工具回退路径
 ```
 
-如果端口占用，后端会尝试递增端口。
+服务固定监听 `PORT`，默认 `5177`。端口占用时直接退出，不自动递增。
 
-## 3. 目录结构
+## 3. 设备抽象
 
-核心文件如下：
+`server/src/device-controller.js` 是业务代码访问设备的唯一统一入口。
+
+选择规则：
+
+1. 优先复用最近成功的 adapter。
+2. 初次探测顺序为 ADB、HDC。
+3. ADB 不可用时回退 HDC。
+4. 任务、录制和回放开始时锁定具体 adapter 和序列号。
+5. 锁定期间设备变化会返回错误，不会静默切换到另一台手机。
+
+Adapter：
 
 ```text
-package.json
-data/apps.json
-public/index.html
-public/app.js
-public/styles.css
-server/index.js
-server/src/adb.js
-server/src/app-registry.js
-server/src/config.js
-server/src/harness.js
-server/src/llm.js
-server/src/safety.js
-server/src/task-parser.js
-server/src/skills/short-video.js
-server/src/skills/live-stream.js
-server/src/skills/doubao-chat.js
-server/src/capture/*.js
-skills/*/SKILL.md
+server/src/adb.js   Android ADB
+server/src/hdc.js   HarmonyOS HDC
 ```
 
-模块职责：
+统一能力包括：
 
-| 文件 | 职责 |
-|---|---|
-| `server/index.js` | HTTP API、静态资源服务、任务入口 |
-| `server/src/harness.js` | 任务生命周期管理，串联解析、安全检查、skill、ADB 执行 |
-| `server/src/task-parser.js` | 无模型时的规则解析 |
-| `server/src/llm.js` | 可选模型解析，把自然语言转成 JSON |
-| `server/src/safety.js` | 安全策略，拦截高风险任务 |
-| `server/src/adb.js` | ADB 操作封装 |
-| `server/src/app-registry.js` | 加载应用表、按名称/别名匹配 App |
-| `server/src/config.js` | 集中读取环境变量和默认值 |
-| `server/src/skills/short-video.js` | 短视频浏览 skill |
-| `server/src/skills/live-stream.js` | 直播间被动观看/切换 skill |
-| `server/src/skills/doubao-chat.js` | 豆包英文聊天 skill |
-| `server/src/capture/*.js` | 抓包、端侧端口日志、提取和报告模块 |
-| `public/app.js` | 前端提交任务、轮询日志、刷新设备状态 |
-| `data/apps.json` | App 名称、别名、包名、分类、skill 映射 |
+- 应用安装列表、前台应用、屏幕尺寸和方向
+- 启动/停止应用、Activity/URI、返回/Home
+- 点击、长按、滑动
+- UI 文本、资源节点和通用节点定位
+- 文本与硬件键码输入
+- 截图和 UI 动作录制
+- 媒体播放和敏感弹窗检查
 
-## 4. 前端实现
+### 3.1 坐标适配
 
-前端是静态页面，由后端直接托管。
+动作可携带：
 
-当前页面包含：
+- `normalizedX` / `normalizedY`
+- `referenceScreen`
+- UI target（文本、resource id、节点类型）
 
-- API Key 输入框
-- 任务文本框
-- 是否使用模型解析的开关
-- 开始按钮
-- 停止按钮
-- 设备状态
-- 当前任务状态
-- 执行日志
+执行时优先使用 UI 节点中心；无法定位时按录制分辨率与目标分辨率比例换算坐标，并把结果限制在目标屏幕范围内。滑动起止点使用相同规则。
 
-前端主要逻辑在 `public/app.js`：
+### 3.2 HarmonyOS 输入
+
+普通文本使用：
 
 ```text
-submit 表单
-  -> POST /api/tasks
-  -> 保存 taskId
-  -> 每秒 GET /api/tasks/:id
-  -> 渲染任务状态和日志
-  -> 任务结束后停止轮询
+hdc shell uitest uiInput text
 ```
 
-停止任务：
+部分仅接受硬件键输入的场景使用 `input_key_text`，当前只支持无空格的 ASCII 字母和数字。豆包 HarmonyOS skill 使用这种方式。
+
+## 4. App 与工作流
+
+`data/apps.json` 是 App 身份来源，包含：
+
+- `id`
+- 展示名称和别名
+- Android `packageName`
+- 可选 HarmonyOS `harmonyBundleName`
+- 分类
+- runtime skill
+- 可选 skill UI 配置
+
+当前配置 51 个 App，其中 24 个有 Harmony bundle 映射。
+
+`server/src/workflow-registry.js` 定义动作录制和快捷任务共用的工作流。当前共 49 个：
+
+| 分类 | 数量 | 说明 |
+| --- | ---: | --- |
+| VoIP | 10 | 5 个 App，各自拆分音频/视频通话 |
+| 会议 | 8 | 快速会议和加入会议 |
+| 短视频 | 7 | 时长参数 |
+| 直播 | 14 | 时长参数 |
+| 传输 | 3 | 微信消息、微信媒体、welink 媒体 |
+| 上传下载 | 3 | 目标参数 |
+| AI 应用 | 4 | 时长和间隔 |
+
+长视频和导航不在快捷任务目录中，但对应文本 intent 和代码 skill 仍存在。
+
+工作流状态：
 
 ```text
-POST /api/tasks/:id/stop
+pending   未验证，前端灰色
+verified  已验证，且 App 安装时可执行
 ```
 
-设备状态刷新：
+`VERIFIED_WORKFLOW_IDS` 是可随 Git 分发的代码验证基线。动作录制回放产生的额外验证状态来自 `data/recordings/`，仅在当前机器生效。
+
+## 5. 任务解析和执行
+
+`TaskManager` 位于 `server/src/harness.js`。
+
+任务状态：
 
 ```text
-GET /api/device
-```
-
-页面之前有应用列表显示，当前已经从前端移除。后端 `/api/apps` 仍保留，后续可以给调试面板或配置页使用。
-
-## 5. 后端 API
-
-后端入口是 `server/index.js`。
-
-当前 API：
-
-| 方法 | 路径 | 作用 |
-|---|---|---|
-| `GET` | `/api/device` | 查询 ADB 设备、型号、前台应用、屏幕尺寸 |
-| `GET` | `/api/apps` | 返回配置应用，并标记是否已安装 |
-| `POST` | `/api/tasks` | 创建并启动任务 |
-| `GET` | `/api/tasks/:id` | 查询任务快照 |
-| `POST` | `/api/tasks/:id/stop` | 请求停止任务 |
-| `GET` | `/api/screenshot.png` | 获取手机截图 |
-| `GET` | `/` | 返回前端页面 |
-
-任务创建请求示例：
-
-```json
-{
-  "taskText": "刷10分钟抖音",
-  "apiKey": "sk-...",
-  "useModel": true
-}
-```
-
-任务快照示例：
-
-```json
-{
-  "id": "uuid",
-  "input": "刷10分钟抖音",
-  "status": "running",
-  "parsed": {
-    "intent": "watch_feed",
-    "appName": "抖音",
-    "durationMs": 600000
-  },
-  "stepIndex": 3,
-  "totalSteps": 40,
-  "logs": []
-}
-```
-
-## 6. Harness 执行链路
-
-核心类是 `TaskManager`，位于 `server/src/harness.js`。
-
-任务生命周期：
-
-```text
-start()
-  -> 创建 task 对象
-  -> 异步 #run()
-  -> 返回初始 snapshot
-
-#run()
-  -> #parse()
-  -> evaluateSafety()
-  -> #execute()
-  -> completed / blocked / failed / stopped
-```
-
-任务对象核心字段：
-
-| 字段 | 含义 |
-|---|---|
-| `id` | 任务 UUID |
-| `input` | 用户原始输入 |
-| `status` | `running` / `completed` / `failed` / `blocked` / `stopped` |
-| `parsed` | 解析后的结构化任务 |
-| `stepIndex` | 当前执行到第几步 |
-| `totalSteps` | 总步骤数 |
-| `logs` | 执行日志 |
-| `stopped` | 停止标记 |
-
-停止机制：
-
-```text
-stop(taskId)
-  -> task.stopped = true
-  -> skill 执行 wait/swipe 前后检查 stopped
-  -> 抛出 TaskStoppedError
-  -> 状态变为 stopped
-```
-
-目前 harness 支持的 intent：
-
-```text
-launch_app
-watch_feed
-watch_live
-back
-home
-```
-
-## 7. Prompt 与 Skill 的分工
-
-当前系统不是“模型直接控制手机”，而是“模型只做任务解析”。
-
-### 7.1 模型负责什么
-
-模型输入是用户任务和应用列表。
-
-模型输出必须是 JSON，例如：
-
-```json
-{
-  "intent": "watch_feed",
-  "appName": "抖音",
-  "durationMs": 600000
-}
-```
-
-或：
-
-```json
-{
-  "intent": "watch_live",
-  "appName": "抖音",
-  "durationMs": 600000,
-  "switchIntervalMs": 60000,
-  "requiresCurrentLiveRoom": true
-}
-```
-
-模型禁止输出：
-
-- shell 命令
-- adb 命令
-- 坐标点击
-- 自由文本执行计划
-
-### 7.2 Skill 负责什么
-
-Skill 是后端固定代码，负责把结构化任务变成动作序列。
-
-例如短视频 skill：
-
-```text
-launch_app
-wait
-swipe
-wait
-swipe
-complete
-```
-
-模型只决定“做什么”，skill 决定“怎么安全地做”。
-
-这种结构的好处：
-
-- 模型不能直接执行危险命令。
-- ADB 能力被限定在后端 allowlist。
-- 每类 App 可以逐步沉淀可复用的 skill。
-- 可以为不同业务流建立不同安全策略。
-
-## 8. 规则解析 fallback
-
-如果前端没有勾选“使用模型解析”，或者模型调用失败，后端会走 `parseTaskFallback()`。
-
-fallback 主要支持：
-
-- 返回
-- 回到桌面
-- 打开 App
-- 刷短视频
-- 观看直播并定时切换
-- 时长解析
-- 直播切换间隔解析
-
-fallback 解析能力有限，适合固定格式命令，例如：
-
-```text
-打开抖音
-刷30秒抖音
-刷10分钟小红书
-观看抖音直播10分钟每1分钟切换
-返回
-回到桌面
-```
-
-复杂自然语言建议走模型解析。
-
-## 9. ADB 执行层
-
-ADB 封装在 `server/src/adb.js`。
-
-当前支持：
-
-| 方法 | ADB 能力 |
-|---|---|
-| `listDevices()` | `adb devices` |
-| `getDeviceStatus()` | 设备、型号、前台 App、屏幕尺寸 |
-| `getInstalledPackages()` | `pm list packages` |
-| `getCurrentFocus()` | `dumpsys window` |
-| `getScreenSize()` | `wm size` |
-| `launchPackage()` | `monkey -p package` |
-| `keyevent()` | 返回、Home 等按键 |
-| `swipe()` | 滑动 |
-| `tap()` | 点击 |
-| `screenshotPng()` | 截图 |
-
-虽然 `tap()` 已封装，但当前 skill 主要使用 `launch_app`、`wait`、`swipe`、`keyevent`。危险的随机点击、表单提交、支付等没有开放给模型。
-
-## 10. App Registry
-
-应用配置在 `data/apps.json`。
-
-每个 App 包含：
-
-```json
-{
-  "id": "douyin",
-  "name": "抖音",
-  "aliases": ["抖音", "抖音短视频", "抖音直播"],
-  "packageName": "com.ss.android.ugc.aweme",
-  "categories": ["短视频", "直播"],
-  "skill": "short_video_feed"
-}
-```
-
-匹配逻辑：
-
-```text
-用户输入 / 模型输出 appName
-  -> findAppByName()
-  -> 按 name 和 aliases 匹配
-  -> 返回 packageName 和 skill
-```
-
-`/api/apps` 会结合 `adb shell pm list packages` 标记应用是否已安装。
-
-## 11. 已实现 Skill
-
-### 11.1 short_video_feed
-
-文件：
-
-```text
-server/src/skills/short-video.js
-```
-
-用途：
-
-```text
-刷抖音
-刷小红书
-刷 B 站短视频
-```
-
-动作策略：
-
-```text
-1. 打开 App
-2. 等待加载
-3. 按屏幕高度计算上滑坐标
-4. 观看 5、7、9、11、13 秒循环
-5. 上滑下一条
-6. 到达时长后 complete
-```
-
-安全限制：
-
-- 不点赞
-- 不关注
-- 不评论
-- 不私信
-- 不点击广告或商品
-- 不进入支付/下单流程
-
-### 11.2 live-stream
-
-文件：
-
-```text
-server/src/skills/live-stream.js
-```
-
-用途：
-
-```text
-在用户已经手动进入直播间后，被动观看并定时上滑切换直播间
-```
-
-设计约束：
-
-- 不自动搜索直播间。
-- 不自动进入直播间。
-- 不打赏。
-- 不发评论。
-- 不关注主播。
-- 不点击购物车。
-
-`harness` 会检查当前前台包名。如果当前前台 App 不是目标 App，会拒绝执行并提示先手动进入直播间。
-
-动作策略：
-
-```text
-wait switchIntervalMs
-swipe
-wait switchIntervalMs
-swipe
-complete
-```
-
-## 12. 安全策略
-
-安全策略在 `server/src/safety.js`。
-
-当前拦截关键词包括：
-
-```text
-付款
-支付
-下单
-抢票
-抢单
-抢红包
-评论
-私信
-关注
-点赞
-打赏
-验证码
-人机验证
-绕过
-```
-
-当前允许的 intent：
-
-```text
-launch_app
-watch_feed
-watch_live
-back
-home
-```
-
-策略原则：
-
-- 被动浏览可以自动化。
-- 影响他人、影响账号、涉及交易、绕过风控的动作不自动化。
-- 模型输出必须经过安全检查。
-- skill 内部不做高风险点击。
-
-## 13. 当前已验证能力
-
-根据已有验证记录，已经确认：
-
-- ADB 可识别 Android 手机。
-- 可打开小红书。
-- 可打开抖音。
-- 可执行短视频上滑浏览。
-- 可停止运行中的任务。
-- 高风险任务会被拦截。
-- 手机可连接电脑热点，落在 `192.168.137.0/24`。
-- 指定 WLAN 接口可用 `tshark` 抓到手机流量。
-- 豆包英文聊天已经固化为 `doubao_chat` runtime skill。
-
-## 14. 与流量采集 Agent 的关系
-
-当前系统已经能完成“操作手机”的部分。要成为完整的流量采集 agent，需要增加采集编排层。
-
-目标链路：
-
-```text
-用户输入采集任务
-  -> 解析 App 和业务流
-  -> 检查手机是否连到电脑热点
-  -> 启动指定 WLAN 接口抓包
-  -> 启动端侧端口映射记录
-  -> 执行 App skill
-  -> 停止端侧记录
-  -> 拉回 port_mapping.txt
-  -> 停止抓包
-  -> 调用 get_pcap.py 提取应用流量
-  -> 输出 pcap 和采集报告
-```
-
-电脑侧抓包建议使用：
-
-```text
-tshark / dumpcap
-接口名通过请求参数或 CAPTURE_INTERFACE_NAME 指定
-不要硬编码 -i 4 或 -i 5
-```
-
-端侧鸿蒙方案：
-
-```sh
-LOG_FILE="$PORT_MAPPING_REMOTE_FILE"
-echo "TIME, PROTO, LOCAL_IP, REMOTE_IP, STATE, PID_PROGRAM" > $LOG_FILE
-
-while true; do
-  CURRENT_TIME=$(date +%H:%M:%S)
-  netstat -anp 2>/dev/null | grep "目标包名" | while read line; do
-    echo "$CURRENT_TIME $line" >> $LOG_FILE
-  done
-  sleep 0.5
-done
-```
-
-Android 上 `netstat -anp` 通常不会稳定输出 `PID/包名`，因此只能用于模拟热点和抓包链路，无法完全验证鸿蒙端口映射能力。
-
-## 15. 采集编排模块
-
-已新增：
-
-```text
-server/src/capture/
-  interface.js       # 动态发现 WLAN / NPF GUID
-  tshark.js          # 启停抓包进程
-  device-log.js      # hdc/adb 端侧 netstat 记录
-  extractor.js       # 调用 GET_PCAP_SCRIPT 指定的 get_pcap.py
-  manager.js         # 采集会话状态机
-  report.js          # 采集报告输出
-```
-
-待接入 API：
-
-```text
-POST /api/capture/start
-POST /api/capture/stop
-GET  /api/capture/:id
-POST /api/capture/:id/mark
-```
-
-采集任务状态：
-
-```text
-idle
-checking_device
-checking_hotspot
-capturing
-running_skill
-pulling_logs
-extracting
+running
+waiting_confirmation
 completed
+blocked
 failed
 stopped
 ```
 
-## 16. 高风险业务的处理方式
+解析模式：
 
-对于支付、抢票、抢单、抢红包等业务，系统不应自动完成关键动作。
+- `rules`：`parseTaskFallback()`
+- `api`：Responses API；失败时带错误信息回退规则解析
+- `codex`：本机 Codex CLI；失败时带错误信息回退规则解析
 
-推荐实现人工确认采集模式：
-
-```text
-1. Agent 打开目标 App
-2. Agent 启动抓包和端侧记录
-3. 用户手动操作到关键按钮前
-4. 用户在前端点击“标记关键时刻”
-5. 用户手动点击 App 中的关键按钮
-6. Agent 截取标记前后时间窗口流量
-7. Agent 停止抓包并提取 pcap
-```
-
-比如 12306 只能做：
+现役 intent：
 
 ```text
-打开 12306
-启动采集
-人工选票 / 人工提交
-记录提交前后窗口
-提取流量
+launch_app
+watch_feed
+watch_live
+live_entry
+play_tencent_video
+play_generic_media
+amap_navigation
+wechat_channels_feed
+wechat_send_messages
+wechat_send_media
+doubao_chat
+ai_chat
+back
+home
 ```
 
-不能做：
+`missing_parameter`、`unsupported_flow` 和 `unknown` 不进入执行。
+
+### 5.1 执行动作
+
+Harness 可执行的动作包括：
+
+- App/Activity/URI 启动
+- tap/long press/swipe/key event
+- UI 文本、节点、Activity、方向和媒体状态断言
+- 屏幕变化断言
+- 文本输入和微信消息循环
+- 人工确认
+- `start_capture`
+- 完成
+
+每个动作前后检查停止标记。任务结束、失败或停止时都会尝试停止采集并释放设备锁。
+
+### 5.2 人工确认
+
+动态页面无法可靠自动进入时，skill 可以进入 `waiting_confirmation`。用户完成指定手机操作后调用：
 
 ```text
-自动抢票
-自动提交订单
-自动支付
-绕过验证码或排队
+POST /api/tasks/:id/continue
 ```
 
-## 17. 当前限制和待修复项
+典型场景是小红书或腾讯视频的内容入口。人工确认不允许绕过安全策略。
 
-### 17.1 采集入口未接到前端
+## 6. 动作录制
 
-后端已经有 `server/src/capture/` 基础模块，但 `server/index.js` 还没有暴露 `/api/capture/*`，前端也没有采集会话的启动、停止、标记和下载入口。
+`server/src/action-recorder.js` 管理录制、修复、回放和本地恢复。
 
-### 17.2 真实鸿蒙端 hdc 待联调
-
-Android 可以模拟热点和抓包链路，但 `netstat -anp` 对包名/PID 的输出不稳定。鸿蒙端的 `hdc shell` 端口映射记录还需要在真实鸿蒙设备上验证。
-
-### 17.3 UI 自动化观察层仍偏基础
-
-当前点击控件已经优先通过 `uiautomator dump` 的 resource-id 定位，短视频/直播切换使用屏幕尺寸计算滑动坐标。后续更稳的方案是：
-
-- `uiautomator dump` 定位控件
-- OCR 读取屏幕
-- screenshot 辅助校验
-- 针对弹窗、登录、网络异常做状态机
-
-## 18. 推荐下一步
-
-建议按以下顺序推进：
-
-1. 在 `server/index.js` 接入 `/api/capture/*`。
-2. 前端增加采集任务状态、关键时刻标记、产物下载入口。
-3. 在真实鸿蒙设备上联调 `hdc` 端口映射记录。
-4. 配置 `GET_PCAP_SCRIPT` 指向本机 `get_pcap.py`。
-
-## 19. 总结
-
-当前实现本质是：
+录制会话状态主要包括：
 
 ```text
-prompt 负责理解任务
-fallback parser 负责固定命令兜底
-safety 负责拦截风险
-skill 负责生成动作序列
-ADB allowlist 负责执行
-frontend 负责输入、日志和停止
+starting
+recording
+stopping
+stopped
+replaying
+replayed
+replay_failed
+failed
 ```
 
-这种架构适合继续扩展为流量采集 agent，因为手机操作和流量采集可以通过同一个 harness 编排：
+模型纠正状态单独记录在 `correctionStatus`，不复用录制会话状态。
+
+流程：
+
+1. 根据工作流参数创建本地会话。
+2. 锁定当前设备。
+3. 启动 ADB/HDC UI 动作记录。
+4. 保存原始动作、时间轴、动作上下文和诊断截图。
+5. 结束后解析为可回放轨迹并评估质量。
+6. 可选调用模型纠正轨迹。
+7. 回放时根据目标屏幕缩放坐标。
+8. 全部验证检查通过后写入 `verified`。
+
+覆盖规则：
+
+- 开始同一工作流的新录制时，删除该工作流旧的未验证录制。
+- 已验证录制不自动删除。
+- 下一次开始前会释放状态已结束但仍残留的会话锁。
+- 敏感参数不会明文进入快照和产物。
+
+验证层级：
+
+- 普通工作流：轨迹完成验证。
+- 腾讯会议快速会议：专用会议状态检查。
+- 微信发图/发视频：专用聊天媒体气泡和发送结果检查。
+
+录制产生：
 
 ```text
-采集准备
-  -> 手机操作 skill
-  -> 端侧端口映射
-  -> 指定 WLAN 接口抓包
-  -> 流量提取
-  -> 报告输出
+data/recordings/<App>/<功能>/<时间戳-会话ID>/
+  trajectory.json
+  skill-draft.json
+  skill-corrected.json       可选
+  contexts.json
+  raw-live.jsonl
+  raw-remote.log
+  recording-*.png
+  replay-*.png
 ```
 
-关键工程原则是：模型只做结构化解析，不直接执行命令；高风险业务只允许人工确认采集，不允许自动完成真实交易或抢占行为。
+目录中可能包含联系人、聊天内容和截图，已被 `.gitignore` 排除。
+
+### 6.1 当前集成边界
+
+录制轨迹由动作录制面板回放。`TaskManager` 尚未把任意录制轨迹作为通用 runtime skill 执行。
+
+因此：
+
+- 工作流“已回放验证”表示录制面板可以复现该轨迹。
+- 自由文本和快捷任务执行仍取决于 harness 中已有 intent 和代码 skill。
+- 将录制轨迹升级为可分发 runtime skill 需要独立的发布和脱敏流程。
+
+## 7. VoIP 工作流
+
+以下 App 分别有独立的 `audio-call` 和 `video-call`：
+
+- 微信
+- QQ
+- 钉钉
+- 企业微信
+- 畅连
+
+命令语义固定为向第一个联系人发起对应类型通话，不提供联系人参数。音频和视频轨迹、验证状态、保存目录互不覆盖。
+
+旧“音视频通话”记录通过 `workflowId` 映射到当前规范名称；新录制写入“音频通话”或“视频通话”目录。
+
+## 8. 同步采集
+
+`server/src/capture/manager.js` 管理一个活动采集会话。
+
+采集不是先于手机业务操作统一启动。Skill 在目标页面或业务状态检查之后放置 `start_capture`：
+
+```text
+进入 App/业务页
+  -> 前台 App、UI、Activity、媒体或画面变化检查
+  -> start_capture
+  -> 正式持续操作
+```
+
+`launch_app` 这种无后续业务状态的任务在应用启动后立即开始采集。
+
+### 8.1 采集组件
+
+1. 解析 `tshark -D`，按用户输入的接口名匹配真实接口。
+2. 启动 tshark，写入 `traffic.pcapng`。
+3. 通过 ADB/HDC 启动端侧 `netstat -anp` 采样。
+4. HDC 使用 Harmony bundle 匹配；ADB 使用 package 名称。
+5. HarmonyOS 优先启动系统录屏。
+6. 系统录屏失败或使用 ADB 时，定时截图并用 FFmpeg 合成。
+7. 任务结束后停止组件并拉取 `port_mapping.txt`。
+8. 配置提取脚本时运行 Python 提取。
+9. 始终尝试写 `report.md`。
+
+输出目录：
+
+```text
+<outputRoot>/<App>/<业务>/<YYYYMMDD_HH-mm-ss-ID>/
+  traffic.pcapng
+  port_mapping.txt
+  screen_record.mp4
+  extracted/
+  report.md
+```
+
+默认配置：
+
+```text
+interfaceName = WLAN3
+outputRoot = <项目>\data_collect
+screenFps = 1
+portMappingIntervalSec = 0.5
+```
+
+当前 HTTP API 只暴露采集默认值和会话查询；开始与停止由任务生命周期驱动：
+
+```text
+GET /api/capture/config
+GET /api/captures/:id
+```
+
+## 9. 前端
+
+`public/index.html` 和 `public/app.js` 提供：
+
+- 任务文本与三种解析模式
+- 采集接口、手机 IP、保存目录、录屏、端口映射和提取脚本
+- 参数化快捷任务
+- 任务日志、停止和人工继续
+- 采集状态与输出路径
+- 动作录制、参数、模型纠正和回放
+
+前端从 `/api/apps` 和 `/api/workflows` 动态构造目录，不维护第二份 App/工作流清单。静态资源和 API 都返回 `Cache-Control: no-store`。
+
+## 10. 安全
+
+`server/src/safety.js` 是所有文本任务的执行门。
+
+明确禁止：
+
+- 支付、订单、购买、票务和红包
+- 叫车确认
+- 评论、私信、关注、点赞和打赏
+- 验证码、人机验证和风控绕过
+
+微信传输只允许第一个会话。AI 对话只允许受限英文短消息。未实现的会议、VoIP、上传下载等文本流程会返回 `unsupported_flow`。
+
+## 11. 配置与数据边界
+
+配置来源为环境变量和 `server/src/config.js`。本机工具绝对路径只作为存在性检测后的 Windows 回退，不是跨机器合同。
+
+Git 跟踪：
+
+- 源码、测试、文档、App 和工作流配置
+
+Git 忽略：
+
+- `data/recordings/`
+- `data_collect/`
+- `data/*.png`
+- `*.log`
+- `.env`
+
+`App流识别_列表.xlsx` 是受控参考数据。除非用户明确要求，不编辑、覆盖、暂存或提交。
+
+## 12. API
+
+现役路由：
+
+```text
+GET  /api/device
+GET  /api/apps
+GET  /api/workflows
+POST /api/tasks
+GET  /api/tasks/current
+GET  /api/tasks/:id
+POST /api/tasks/:id/stop
+POST /api/tasks/:id/continue
+GET  /api/recordings
+POST /api/recordings/start
+GET  /api/recordings/:id
+POST /api/recordings/:id/stop
+POST /api/recordings/:id/repair
+POST /api/recordings/:id/replay
+GET  /api/capture/config
+GET  /api/captures/:id
+GET  /api/screenshot.png
+```
+
+## 13. 验证门禁
+
+代码和文档同步后至少运行：
+
+```powershell
+npm test
+node --check public\app.js
+node --check server\index.js
+```
+
+服务 smoke：
+
+```text
+GET http://localhost:5177/
+GET http://localhost:5177/app.js
+GET http://localhost:5177/api/workflows
+GET http://localhost:5177/api/device
+```
+
+静态页面和 API 应返回 `Cache-Control: no-store`。设备相关的真实操作、系统录屏和抓包 smoke test 必须在目标手机连接时执行；设备断开时保持 pending，不能由单元测试替代。
+
+## 14. 已知限制
+
+- 本地录制验证状态不随 Git 分发。
+- 任意录制轨迹尚未接入通用任务执行。
+- 只有腾讯会议快速会议和微信媒体发送有专用严格回放验证。
+- 许多工作流仅有参数槽位，仍为 pending。
+- ADB 录屏使用截图合成回退，不是 Android 系统 `screenrecord`。
+- HDC UI 结构和坐标仍受 App 版本、权限弹窗和设备布局影响。

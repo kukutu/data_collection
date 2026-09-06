@@ -1,26 +1,26 @@
-# tencent-video-playback
+---
+name: tencent-video-playback
+description: Use when implementing or maintaining bounded Tencent Video playback with manual content selection, playback-state validation, and task-integrated capture.
+---
 
-Use this skill for Tencent Video playback sessions.
+# Tencent Video Playback
 
-## Task Shape
+Runtime implementation lives in `server/src/skills/tencent-video.js`.
+
+Task examples:
 
 - `看10分钟腾讯视频`
 - `播放20秒腾讯视频`
 
-## Behavior
+Current flow:
 
-The skill:
+1. Clear stale prompts and reset Tencent Video.
+2. Launch the App.
+3. Ask the user to open the target video and enter landscape full-screen playback.
+4. Verify landscape orientation, foreground package, and media playback state.
+5. Execute `start_capture`.
+6. Keep the playback session active for the requested duration.
 
-- closes possible leftover jump prompts
-- resets Tencent Video state
-- opens Tencent Video
-- taps into the ranking/content page
-- taps the first ranked video
-- taps the player area
-- keeps the playback/detail session active for the requested duration
+Successful execution requires a real playing media session, not merely the App home page. The user handoff is intentional because the content page is dynamic.
 
-Successful execution means the foreground package is `com.tencent.qqlive` and the activity reaches Tencent Video's video detail/player activity, not just the home page.
-
-## Limits
-
-This skill uses coordinate heuristics because Tencent Video's homepage is dynamic. If the layout changes, retune the tap coordinates in `server/src/skills/tencent-video.js`.
+Do not automate subscriptions, purchases, comments, likes, or other account-impacting actions.

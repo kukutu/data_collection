@@ -1,14 +1,17 @@
 ---
 name: live-stream
-description: Use when implementing, maintaining, or operating passive live-stream watching skills in data_collect_agent, including current-room-only viewing, timed waits, and swipe-based live room switching without chat, gifts, follows, likes, or purchases.
+description: Use when implementing or maintaining passive live-stream watching, including verified live-entry flows, current-room switching, capture timing, and account-safe limits.
 ---
 
 # Live Stream
 
-Keep the skill folder as repo-level guidance for the runtime implementation in `server/src/skills/live-stream.js`.
+There are two runtime paths:
 
-Use this skill only after the user has manually entered a live room. The harness should verify the current foreground package when available, then execute a loop of `wait -> swipe` until the requested duration is reached.
+- `server/src/skills/live-entry.js`: enters and validates supported live rooms for Douyin, Taobao, JD, WeChat, and Xiaohongshu.
+- `server/src/skills/live-stream.js`: operates only when the target App is already foregrounded in a live room.
 
-Generate only `wait`, `swipe`, and `complete` steps. Do not launch into unknown live rooms, send chat messages, follow, like, gift, pay, buy products, or bypass account prompts.
+Both paths must start capture after the live-room state is checked, then run bounded `wait -> swipe` loops. The default switch interval is randomized between two and five minutes; explicit intervals are clamped and jittered.
 
-Use `switchIntervalMs` for the wait between live-room switches. Clamp very small intervals to avoid unnatural or unstable device behavior.
+Use current screen dimensions or scaling metadata for swipe coordinates. Verify live-room evidence with Activity, UI text, or screen motion where the App supports it.
+
+Do not send chat, follow, like, gift, pay, buy products, open shopping carts, or bypass account prompts.

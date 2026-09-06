@@ -1,20 +1,22 @@
 ---
 name: doubao-chat
-description: Use when implementing, maintaining, or operating the Doubao chat automation in data_collect_agent, including parsing doubao_chat tasks, resolving app package/resource configuration from data/apps.json, generating ADB/uiautomator steps, and validating bounded English-only message loops.
+description: Use when implementing or maintaining bounded Doubao chat automation across Android and HarmonyOS, including safe message generation, device-specific input, capture timing, and reply validation.
 ---
 
 # Doubao Chat
 
-Keep this skill folder as repo-level guidance for the runtime implementation in `server/src/skills/doubao-chat.js`.
+Runtime implementation lives in `server/src/skills/doubao-chat.js`.
 
-Use `doubao_chat` only for bounded English short-message conversations with 豆包. Resolve the app package and UI resource ids from `data/apps.json`; reject the task if app resolution does not point to a `doubao_chat` app.
+Accepted tasks resolve to `intent: "doubao_chat"` with a bounded duration, message interval, English language, and optional message list.
 
-Runtime flow:
+Flow:
 
-1. Parse tasks such as `和豆包随机聊天十分钟` into `intent: "doubao_chat"`, `appName: "豆包"`, `durationMs`, `intervalMs`, `language: "en"`, and `random: true` when requested.
-2. Let `server/src/harness.js` route `doubao_chat` to `buildDoubaoChatPlan`.
-3. Generate only these step types: `launch_app`, `wait`, `tap_resource`, `input_text`, and `complete`.
-4. Locate UI controls by resource id from `app.skillConfig.resources`, not by fixed coordinates. Required keys are `input` and `send`; `closeButton` is optional.
-5. Send short ASCII English messages because `adb shell input text` is unreliable for Chinese and rich punctuation.
+1. Resolve Doubao from `data/apps.json`.
+2. Launch the App and handle only allowlisted non-sensitive prompts.
+3. Confirm the foreground App.
+4. Execute `start_capture`.
+5. Send short uppercase ASCII tokens and wait for the reply to become stable.
 
-Do not add uploads, calls, payments, account changes, social engagement, captcha bypass, ticket/order submission, or other high-risk actions to this skill.
+Android uses configured input/send resource ids. HarmonyOS uses scaled input/send coordinates plus HDC hardware key injection because app text input is less reliable there. Harmony key text is limited to ASCII letters and digits without spaces.
+
+Do not add uploads, calls, payments, account changes, social engagement, captcha bypass, ticket/order submission, or unbounded message loops.
