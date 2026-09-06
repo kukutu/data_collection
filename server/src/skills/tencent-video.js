@@ -44,6 +44,7 @@ export function buildTencentVideoPlaybackPlan({
       label: '确认腾讯视频媒体会话在播放',
       message: '腾讯视频未检测到播放状态，疑似未进入真实播放页',
     },
+    { type: 'start_capture', label: '开始采集腾讯视频内容' },
   ];
 
   let elapsed = steps

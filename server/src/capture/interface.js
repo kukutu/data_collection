@@ -20,13 +20,24 @@ export function parseTsharkInterfaces(output) {
 }
 
 export function findInterfaceByName(interfaces, name) {
-  const target = String(name || '').toLowerCase();
-  return interfaces.find((item) => item.name.toLowerCase() === target) || null;
+  const target = normalizeInterfaceName(name);
+  return (
+    interfaces.find((item) => normalizeInterfaceName(item.name) === target) ||
+    interfaces.find((item) => normalizeInterfaceName(item.device) === target) ||
+    null
+  );
 }
 
 export async function listCaptureInterfaces({ tshark = TSHARK } = {}) {
   const output = await execText(tshark, ['-D']);
   return parseTsharkInterfaces(output);
+}
+
+function normalizeInterfaceName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
 }
 
 function execText(command, args) {

@@ -55,6 +55,11 @@ const JD_LIVE_ROOM_EVIDENCE = [
   /观看/,
   /人气/,
 ];
+const WECHAT_LIVE_ROOM_CONTROL_EVIDENCE = /(欢迎来到直播间|说点什么|暂无法评论)/;
+const WECHAT_LIVE_ROOM_EVIDENCE = [
+  WECHAT_LIVE_ROOM_CONTROL_EVIDENCE,
+  /(正在直播|直播间内|人看过|观众)/,
+];
 
 export function buildLiveEntryPlan({
   app,
@@ -78,6 +83,7 @@ export function buildLiveEntryPlan({
   const steps = [
     ...buildLiveEntrySteps({ app, size, x, safeDuration }),
     ...buildLiveValidationSteps(app),
+    { type: 'start_capture', label: `开始采集${app.name}直播内容` },
   ];
 
   let elapsed = sumWaits(steps);
@@ -405,6 +411,14 @@ function buildWechatLiveEntrySteps({ app, size, safeDuration }) {
       label: '再次点击微信直播卡片',
     },
     { type: 'wait', ms: 3000, label: '等待微信直播间稳定' },
+    {
+      type: 'tap_if_ui_text_not_matches',
+      matches: [WECHAT_LIVE_ROOM_CONTROL_EVIDENCE],
+      x: Math.round(size.width * 0.5),
+      y: Math.round(size.height * 0.31),
+      label: '显示微信直播间控件',
+    },
+    { type: 'wait', ms: 800, label: '等待微信直播间控件显示' },
   ];
 }
 
@@ -502,11 +516,12 @@ function buildLiveValidationSteps(app) {
   if (app.id === 'wechat') {
     return [
       {
-        type: 'assert_foreground_package',
+        type: 'assert_ui_text_or_activity',
         packageName: app.packageName,
         activityAny: [/FinderLiveVisitor/i],
-        label: '确认进入微信直播间 Activity',
-        message: '微信未进入真实直播间 Activity，不能判定为真实直播播放',
+        all: WECHAT_LIVE_ROOM_EVIDENCE,
+        label: '确认进入微信真实直播间',
+        message: '微信未出现真实直播间 Activity 或直播间控件，不能判定为真实直播播放',
       },
       {
         type: 'assert_screen_changes',

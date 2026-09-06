@@ -58,6 +58,7 @@ export function buildGenericMediaPlaybackPlan({
       label: `确认仍在${app.name}播放页`,
     },
     ...buildPlaybackAssertionSteps({ app, useMediaSession: youku }),
+    { type: 'start_capture', label: `开始采集${app.name}播放内容` },
   ];
 
   let elapsed = sumWaits(steps);

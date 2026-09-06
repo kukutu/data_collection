@@ -81,3 +81,49 @@ test('parses common WeChat Channels wording even when user says 微信号视频'
   assert.equal(parsed.appName, '微信');
   assert.equal(parsed.durationMs, 30 * 1000);
 });
+
+test('parses WeChat message loops for the first conversation', () => {
+  const parsed = parseTaskFallback('在微信向第一个会话循环发消息 2分钟 每5秒发送一次', apps);
+
+  assert.equal(parsed.intent, 'wechat_send_messages');
+  assert.equal(parsed.appName, '微信');
+  assert.equal(parsed.durationMs, 2 * 60 * 1000);
+  assert.equal(parsed.intervalMs, 5000);
+  assert.equal(parsed.targetMode, 'first');
+});
+
+test('parses WeChat media sending for the first conversation and first media item', () => {
+  const parsed = parseTaskFallback(
+    '打开微信向聊天列表第一个会话发送第一项图片或视频',
+    apps,
+  );
+
+  assert.equal(parsed.intent, 'wechat_send_media');
+  assert.equal(parsed.appName, '微信');
+  assert.equal(parsed.targetMode, 'first');
+  assert.equal(parsed.mediaIndex, 0);
+  assert.equal(parsed.sendMode, 'count');
+  assert.equal(parsed.sendCount, 1);
+  assert.equal(parsed.durationMs, null);
+  assert.equal(parsed.intervalMs, 8000);
+});
+
+test('parses WeChat media loops by count or duration', () => {
+  const byCount = parseTaskFallback(
+    '在微信向第一个会话发送第一项图片或视频 3次 每8秒发送一次',
+    apps,
+  );
+  const byDuration = parseTaskFallback(
+    '在微信向第一个会话循环发送第一项图片或视频 2分钟 每5秒发送一次',
+    apps,
+  );
+
+  assert.equal(byCount.sendMode, 'count');
+  assert.equal(byCount.sendCount, 3);
+  assert.equal(byCount.durationMs, null);
+  assert.equal(byCount.intervalMs, 8000);
+  assert.equal(byDuration.sendMode, 'duration');
+  assert.equal(byDuration.sendCount, null);
+  assert.equal(byDuration.durationMs, 2 * 60 * 1000);
+  assert.equal(byDuration.intervalMs, 5000);
+});

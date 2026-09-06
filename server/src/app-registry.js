@@ -25,15 +25,24 @@ export function findAppByName(apps, nameOrText) {
 }
 
 export function installedKnownApps(apps, packageListText) {
-  const installed = new Set(
-    String(packageListText)
+  const source = String(packageListText || '');
+  const installedAndroid = new Set(
+    source
       .split(/\r?\n/)
       .map((line) => line.replace(/^package:/, '').trim())
-      .filter(Boolean),
+      .filter((line) => /^[A-Za-z0-9_.$]+$/.test(line)),
   );
 
-  return apps.map((app) => ({
-    ...app,
-    installed: installed.has(app.packageName),
-  }));
+  return apps.map((app) => {
+    const androidInstalled = Boolean(app.packageName && installedAndroid.has(app.packageName));
+    const harmonyInstalled = Boolean(
+      app.harmonyBundleName && source.includes(app.harmonyBundleName),
+    );
+    const installedVia = androidInstalled ? 'adb' : harmonyInstalled ? 'hdc' : null;
+    return {
+      ...app,
+      installed: Boolean(installedVia),
+      installedVia,
+    };
+  });
 }

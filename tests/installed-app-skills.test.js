@@ -2,12 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildAiChatPlan } from '../server/src/skills/ai-chat.js';
+import { buildAmapNavigationPlan } from '../server/src/skills/amap-navigation.js';
 import { buildDoubaoChatPlan } from '../server/src/skills/doubao-chat.js';
 import { buildGenericMediaPlaybackPlan } from '../server/src/skills/generic-media.js';
 import { buildLiveEntryPlan } from '../server/src/skills/live-entry.js';
 import { buildLiveStreamPlan } from '../server/src/skills/live-stream.js';
 import { buildShortVideoPlan } from '../server/src/skills/short-video.js';
+import { buildTencentVideoPlaybackPlan } from '../server/src/skills/tencent-video.js';
 import { buildWechatChannelsPlan } from '../server/src/skills/wechat-channels.js';
+import {
+  buildWechatMessagesPlan,
+  DEFAULT_WECHAT_MESSAGES,
+} from '../server/src/skills/wechat-messages.js';
 
 const screen = { width: 1260, height: 2800 };
 
@@ -117,6 +123,40 @@ test('WeChat Channels plan uses text navigation before feed swipes', () => {
   assert.ok(plan.some((step) => step.type === 'assert_foreground_package'));
   assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
   assert.ok(plan.some((step) => step.type === 'swipe'));
+});
+
+test('WeChat message plan selects the first conversation and loops a large message pool', () => {
+  const plan = buildWechatMessagesPlan({
+    app: { id: 'wechat', name: '微信', packageName: 'com.tencent.mm' },
+    durationMs: 20_000,
+    intervalMs: 5_000,
+    platform: 'harmony',
+    screen,
+  });
+  const firstConversation = plan.find(
+    (step) => step.type === 'tap' && step.label.includes('第一个会话'),
+  );
+  const chatAssert = plan.find((step) => step.type === 'assert_ui_node');
+  const loop = plan.find((step) => step.type === 'loop_text_messages');
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  const chatAssertIndex = plan.findIndex((step) => step === chatAssert);
+
+  assert.equal(DEFAULT_WECHAT_MESSAGES.length >= 40, true);
+  assert.equal(new Set(DEFAULT_WECHAT_MESSAGES).size, DEFAULT_WECHAT_MESSAGES.length);
+  assert.equal(firstConversation.x, Math.round(screen.width * 0.5));
+  assert.equal(firstConversation.y, Math.round(screen.height * 0.217));
+  assert.deepEqual(chatAssert.types, ['RichEditor']);
+  assert.ok(captureIndex > chatAssertIndex);
+  assert.equal(loop.durationMs, 20_000);
+  assert.equal(loop.intervalMs, 5_000);
+  assert.equal(loop.messages.length, DEFAULT_WECHAT_MESSAGES.length);
+  assert.equal(loop.input.y, Math.round(screen.height * 0.929));
+  assert.equal(loop.send.y, Math.round(screen.height * 0.556));
+  assert.deepEqual(loop.input.target, { types: ['RichEditor'] });
+  assert.deepEqual(loop.send.target, {
+    texts: ['发送'],
+    partial: false,
+  });
 });
 
 test('XHS short video plan hands off to the user before feed browsing', () => {
@@ -286,9 +326,14 @@ test('WeChat live plan taps a live card and validates live room activity', () =>
     (step) => step.type === 'tap_if_activity_not_matches' && step.label.includes('微信直播卡片'),
   );
   const cardTap = plan[cardTapIndex];
+  const revealControlsIndex = plan.findIndex(
+    (step) =>
+      step.type === 'tap_if_ui_text_not_matches' &&
+      step.label.includes('显示微信直播间控件'),
+  );
   const activityAssertIndex = plan.findIndex(
     (step) =>
-      step.type === 'assert_foreground_package' &&
+      step.type === 'assert_ui_text_or_activity' &&
       step.activityAny?.some((matcher) => matcher instanceof RegExp && matcher.test('FinderLiveVisitorWithoutAffinityUI')),
   );
   const activityAssert = plan[activityAssertIndex];
@@ -301,6 +346,7 @@ test('WeChat live plan taps a live card and validates live room activity', () =>
   assert.ok(plan.some((step) => step.type === 'tap' && step.label.includes('发现页直播入口')));
   assert.equal(confirmIndex, -1);
   assert.ok(cardTapIndex > -1, 'expected WeChat live card tap');
+  assert.ok(revealControlsIndex > cardTapIndex, 'WeChat live controls should be revealed after card tap');
   assert.equal(
     cardTap.activityAny.some((matcher) => matcher instanceof RegExp && matcher.test('FinderLiveSquareNewEntranceUI')),
     false,
@@ -311,6 +357,12 @@ test('WeChat live plan taps a live card and validates live room activity', () =>
     activityAssert.activityAny.some((matcher) => matcher instanceof RegExp && matcher.test('FinderLiveSquareNewEntranceUI')),
     false,
     'WeChat validation must not accept the live square page',
+  );
+  assert.ok(
+    activityAssert.all.some(
+      (matcher) => matcher instanceof RegExp && matcher.test('欢迎来到直播间'),
+    ),
+    'Harmony WeChat should accept strong live-room text evidence',
   );
   assert.equal(plan.some((step) => step.type === 'assert_ui_text' && step.label.includes('微信直播间')), false);
   assert.ok(screenChangeIndex > cardTapIndex, 'WeChat live screen validation should run after card tap');
@@ -424,6 +476,8 @@ test('AI chat plans use short adaptive reply waits by default', () => {
       },
     },
     durationMs: 15_000,
+    platform: 'harmony',
+    screen,
   });
 
   for (const plan of [qianwenPlan, doubaoPlan]) {
@@ -453,12 +507,151 @@ test('AI chat plans include large default message pools', () => {
       },
     },
     durationMs: 340_000,
+    platform: 'harmony',
+    screen,
   });
 
-  for (const plan of [qianwenPlan, doubaoPlan]) {
-    const messages = plan.filter((step) => step.type === 'input_text').map((step) => step.text);
+  for (const [plan, inputType] of [
+    [qianwenPlan, 'input_text'],
+    [doubaoPlan, 'input_key_text'],
+  ]) {
+    const messages = plan.filter((step) => step.type === inputType).map((step) => step.text);
     const uniqueMessages = new Set(messages);
     assert.ok(uniqueMessages.size >= 35, `expected a large default message pool, got ${uniqueMessages.size}`);
     assert.ok(messages.every((message) => /^[\x20-\x7E]+$/.test(message)));
+  }
+});
+
+test('Doubao Harmony chat uses HDC key injection and coordinate sending', () => {
+  const plan = buildDoubaoChatPlan({
+    app: {
+      id: 'doubao',
+      name: '豆包',
+      packageName: 'com.larus.nova',
+    },
+    durationMs: 12_000,
+    intervalMs: 8_000,
+    platform: 'harmony',
+    screen,
+  });
+
+  const inputIndex = plan.findIndex((step) => step.type === 'input_key_text');
+  const inputStep = plan[inputIndex];
+  const sendStep = plan[inputIndex + 2];
+
+  assert.equal(inputStep.text, 'FACT');
+  assert.equal(inputStep.clearExisting, true);
+  assert.equal(sendStep.type, 'tap');
+  assert.equal(sendStep.x, Math.round(screen.width * 0.877));
+  assert.equal(sendStep.y, Math.round(screen.height * 0.549));
+  assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+});
+
+test('capture starts only after each skill reaches its validated content state', () => {
+  const doubaoApp = {
+    id: 'doubao',
+    name: 'Doubao',
+    packageName: 'com.larus.nova',
+    skillConfig: {
+      resources: {
+        input: 'com.larus.nova:id/input_text',
+        send: 'com.larus.nova:id/action_send',
+      },
+    },
+  };
+  const plans = [
+    {
+      name: 'short video',
+      plan: buildShortVideoPlan({
+        app: { id: 'douyin', name: 'Douyin', packageName: 'com.ss.android.ugc.aweme' },
+        durationMs: 12_000,
+        screen,
+      }),
+      validation: 'assert_screen_changes',
+    },
+    {
+      name: 'live entry',
+      plan: buildLiveEntryPlan({
+        app: { id: 'taobao', name: 'Taobao', packageName: 'com.taobao.taobao' },
+        durationMs: 30_000,
+        screen,
+      }),
+      validation: 'assert_screen_changes',
+    },
+    {
+      name: 'current live room',
+      plan: buildLiveStreamPlan({
+        app: { id: 'douyin', name: 'Douyin', packageName: 'com.ss.android.ugc.aweme' },
+        durationMs: 12_000,
+        switchIntervalMs: 30_000,
+        screen,
+      }),
+      validation: null,
+    },
+    {
+      name: 'generic media',
+      plan: buildGenericMediaPlaybackPlan({
+        app: { id: 'bilibili', name: 'Bilibili', packageName: 'tv.danmaku.bili' },
+        durationMs: 12_000,
+        screen,
+      }),
+      validation: 'assert_screen_changes',
+    },
+    {
+      name: 'Tencent Video',
+      plan: buildTencentVideoPlaybackPlan({
+        app: { name: 'Tencent Video', packageName: 'com.tencent.qqlive' },
+        durationMs: 12_000,
+      }),
+      validation: 'assert_media_playing',
+    },
+    {
+      name: 'navigation',
+      plan: buildAmapNavigationPlan({
+        app: { name: 'AMap', packageName: 'com.autonavi.minimap' },
+        destination: 'Beijing Station',
+        durationMs: 12_000,
+        screen,
+      }),
+      validation: 'assert_foreground_package',
+    },
+    {
+      name: 'WeChat Channels',
+      plan: buildWechatChannelsPlan({
+        app: { name: 'WeChat', packageName: 'com.tencent.mm' },
+        durationMs: 12_000,
+        screen,
+      }),
+      validation: 'assert_screen_changes',
+    },
+    {
+      name: 'AI chat',
+      plan: buildAiChatPlan({
+        app: { name: 'Qwen', packageName: 'com.aliyun.tongyi' },
+        durationMs: 12_000,
+        screen,
+      }),
+      validation: 'assert_foreground_package',
+    },
+    {
+      name: 'Doubao chat',
+      plan: buildDoubaoChatPlan({
+        app: doubaoApp,
+        durationMs: 12_000,
+      }),
+      validation: 'assert_foreground_package',
+    },
+  ];
+
+  for (const { name, plan, validation } of plans) {
+    const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+    assert.ok(captureIndex >= 0, `${name} should declare a capture boundary`);
+    if (validation) {
+      const validationIndex = plan.findIndex((step) => step.type === validation);
+      assert.ok(validationIndex >= 0, `${name} should declare ${validation}`);
+      assert.ok(captureIndex > validationIndex, `${name} starts capture before validation`);
+    } else {
+      assert.equal(captureIndex, 0, `${name} should start after the caller's room check`);
+    }
   }
 });

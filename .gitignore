@@ -1,6 +1,9 @@
 node_modules/
 tmp/
 release/
+data/recordings/
+data_collect/
+data/*.png
 *.log
 *.tmp
 *.bak

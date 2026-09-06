@@ -11,6 +11,10 @@
     "message",
     "reason",
     "language",
+    "targetMode",
+    "mediaIndex",
+    "sendMode",
+    "sendCount",
     "openFirstAvailable",
     "requiresCurrentLiveRoom",
     "originalText"
@@ -27,6 +31,8 @@
         "play_generic_media",
         "amap_navigation",
         "wechat_channels_feed",
+        "wechat_send_messages",
+        "wechat_send_media",
         "doubao_chat",
         "ai_chat",
         "back",
@@ -45,6 +51,13 @@
     "message": { "type": ["string", "null"] },
     "reason": { "type": ["string", "null"] },
     "language": { "type": ["string", "null"] },
+    "targetMode": { "type": ["string", "null"] },
+    "mediaIndex": { "type": ["number", "null"] },
+    "sendMode": {
+      "type": ["string", "null"],
+      "enum": ["count", "duration", null]
+    },
+    "sendCount": { "type": ["number", "null"] },
     "openFirstAvailable": { "type": ["boolean", "null"] },
     "requiresCurrentLiveRoom": { "type": ["boolean", "null"] },
     "originalText": { "type": ["string", "null"] }

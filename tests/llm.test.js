@@ -14,6 +14,10 @@ test('shared task parser prompt describes supported and unsupported flows', () =
   assert.doesNotMatch(prompt, /meeting_link/);
   assert.match(prompt, /会议/);
   assert.match(prompt, /音视频通话/);
+  assert.match(prompt, /wechat_send_messages/);
+  assert.match(prompt, /wechat_send_media/);
+  assert.match(prompt, /sendMode/);
+  assert.match(prompt, /sendCount/);
   assert.match(prompt, /用户任务: 测试QQ音视频通话/);
 });
 

@@ -15,6 +15,8 @@ const ALLOWED_INTENTS = new Set([
   'play_generic_media',
   'amap_navigation',
   'wechat_channels_feed',
+  'wechat_send_messages',
+  'wechat_send_media',
   'ai_chat',
   'doubao_chat',
   'back',
@@ -77,6 +79,17 @@ export function evaluateSafety(parsedTask, originalText = '') {
     return {
       allowed: false,
       reason: '当前 AI 应用自动聊天仅允许英文短句输入。',
+    };
+  }
+
+  if (
+    ['wechat_send_messages', 'wechat_send_media'].includes(parsedTask?.intent) &&
+    parsedTask.targetMode &&
+    parsedTask.targetMode !== 'first'
+  ) {
+    return {
+      allowed: false,
+      reason: '当前微信发消息 skill 只允许选择聊天列表中的第一个会话。',
     };
   }
 

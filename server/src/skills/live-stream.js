@@ -22,7 +22,7 @@ export function buildLiveStreamPlan({
   const x = Math.round(size.width * 0.5);
   const startY = Math.round(size.height * 0.79);
   const endY = Math.round(size.height * 0.2);
-  const steps = [];
+  const steps = [{ type: 'start_capture', label: '开始采集直播内容' }];
   let elapsed = 0;
   let index = 0;
 

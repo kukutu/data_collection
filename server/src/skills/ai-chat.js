@@ -87,6 +87,8 @@ export function buildAiChatPlan({
       partial: true,
       label: '关闭非必要提示',
     },
+    { type: 'assert_foreground_package', packageName: app.packageName, label: `确认仍在${app.name}` },
+    { type: 'start_capture', label: `开始采集${app.name}对话内容` },
   ];
 
   let elapsed = sumWaits(steps);

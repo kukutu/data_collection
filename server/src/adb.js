@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 
 import { config } from './config.js';
 
@@ -71,7 +71,14 @@ export async function listDevices() {
 export async function getDeviceStatus() {
   const devices = await listDevices();
   const active = devices.find((device) => device.state === 'device') || null;
-  if (!active) return { connected: false, devices };
+  if (!active) {
+    return {
+      connected: false,
+      provider: 'adb',
+      platform: 'android',
+      devices,
+    };
+  }
 
   const [model, focus, screen] = await Promise.all([
     adbText(['shell', 'getprop', 'ro.product.model']).then((value) => value.trim()).catch(() => ''),
@@ -81,6 +88,8 @@ export async function getDeviceStatus() {
 
   return {
     connected: true,
+    provider: 'adb',
+    platform: 'android',
     serial: active.serial,
     model,
     focus,
@@ -154,6 +163,28 @@ export async function launchPackage(packageName) {
   return adbText(['shell', 'monkey', '-p', packageName, '-c', 'android.intent.category.LAUNCHER', '1']);
 }
 
+export async function startUiRecording() {
+  const devices = await listDevices();
+  const active = devices.find((device) => device.state === 'device');
+  if (!active) throw new Error('未检测到可录制的 ADB 设备');
+
+  const child = spawn(ADB, ['-s', active.serial, 'shell', 'getevent', '-lt'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  return {
+    process: child,
+    provider: 'adb',
+    serial: active.serial,
+    mode: 'getevent',
+    readUiRecording: async () => '',
+  };
+}
+
+export async function readUiRecording() {
+  return '';
+}
+
 export async function startActivity({ packageName, activityName }) {
   if (!packageName || !activityName) throw new Error('startActivity requires packageName and activityName');
   return adbText(['shell', 'am', 'start', '-n', `${packageName}/${activityName}`], { timeoutMs: 20000 });
@@ -182,6 +213,19 @@ export async function swipe({ x1, y1, x2, y2, durationMs }) {
 
 export async function tap({ x, y }) {
   return adbText(['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]);
+}
+
+export async function longPress({ x, y, durationMs = 800 }) {
+  return adbText([
+    'shell',
+    'input',
+    'swipe',
+    String(Math.round(x)),
+    String(Math.round(y)),
+    String(Math.round(x)),
+    String(Math.round(y)),
+    String(Math.max(500, Math.round(durationMs))),
+  ]);
 }
 
 export async function openUri({ uri, packageName }) {
@@ -483,11 +527,14 @@ export const adb = {
   getMediaPlaybackState,
   forceStopPackage,
   launchPackage,
+  startUiRecording,
+  readUiRecording,
   startActivity,
   keyevent,
   openUri,
   swipe,
   tap,
+  longPress,
   tapText,
   tapTextInRegion,
   assertNoSensitivePrompt,

@@ -98,6 +98,7 @@ function buildEntrySteps({ app, x, startY, endY }) {
         label: '确认小红书画面在播放',
         message: `${app.name}画面变化不足，将继续按人工确认后的页面浏览`,
       },
+      { type: 'start_capture', label: '开始采集小红书内容' },
     );
     return steps;
   }
@@ -119,6 +120,7 @@ function buildEntrySteps({ app, x, startY, endY }) {
         label: '确认抖音画面在播放',
         message: `${app.name}画面变化不足，将继续尝试浏览`,
       },
+      { type: 'start_capture', label: '开始采集抖音内容' },
     );
     return steps;
   }
@@ -150,6 +152,7 @@ function buildEntrySteps({ app, x, startY, endY }) {
       label: '确认短视频画面在播放',
       message: `${app.name}画面变化不足，疑似没有进入视频播放内容`,
     },
+    { type: 'start_capture', label: `开始采集${app.name}内容` },
   );
 
   return steps;

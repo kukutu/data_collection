@@ -4,6 +4,7 @@
     "name": "抖音",
     "aliases": ["抖音", "抖音短视频", "抖音直播", "抖音支付"],
     "packageName": "com.ss.android.ugc.aweme",
+    "harmonyBundleName": "com.ss.hm.ugc.aweme",
     "categories": ["短视频", "直播", "支付"],
     "skill": "short_video_feed"
   },
@@ -12,6 +13,7 @@
     "name": "小红书",
     "aliases": ["小红书", "小红书视频", "xhs", "XHS", "xhs视频"],
     "packageName": "com.xingin.xhs",
+    "harmonyBundleName": "com.xingin.xhs_hos",
     "categories": ["短视频", "直播"],
     "skill": "short_video_feed"
   },
@@ -20,6 +22,7 @@
     "name": "快手",
     "aliases": ["快手"],
     "packageName": "com.smile.gifmaker",
+    "harmonyBundleName": "com.kuaishou.hmapp",
     "categories": ["短视频", "直播"],
     "skill": "short_video_feed"
   },
@@ -44,6 +47,7 @@
     "name": "头条",
     "aliases": ["头条", "今日头条"],
     "packageName": "com.ss.android.article.news",
+    "harmonyBundleName": "com.ss.hm.article.news",
     "categories": ["短视频"],
     "skill": "launch_only"
   },
@@ -52,6 +56,7 @@
     "name": "微信",
     "aliases": ["微信", "微信直播", "微信视频号", "微信视频号直播", "微信音视频通话", "微信发图/发视频", "微信棋牌类小程序", "抢红包"],
     "packageName": "com.tencent.mm",
+    "harmonyBundleName": "com.tencent.wechat",
     "categories": ["VoIP", "短视频", "直播", "支付", "小程序", "传输", "出行", "抢红包"],
     "skill": "wechat_channels_feed"
   },
@@ -60,6 +65,7 @@
     "name": "QQ",
     "aliases": ["QQ", "QQ音视频通话"],
     "packageName": "com.tencent.mobileqq",
+    "harmonyBundleName": "com.tencent.mqq",
     "categories": ["VoIP"],
     "skill": "launch_only"
   },
@@ -76,6 +82,7 @@
     "name": "企业微信",
     "aliases": ["企业微信", "企业微信音视频通话"],
     "packageName": "com.tencent.wework",
+    "harmonyBundleName": "com.tencent.wework.hmos",
     "categories": ["VoIP"],
     "skill": "launch_only"
   },
@@ -84,6 +91,7 @@
     "name": "畅连",
     "aliases": ["畅连", "畅连音视频通话"],
     "packageName": "com.huawei.meetime",
+    "harmonyBundleName": "com.huawei.hmos.meetime",
     "categories": ["VoIP"],
     "skill": "launch_only"
   },
@@ -92,6 +100,7 @@
     "name": "腾讯会议",
     "aliases": ["腾讯会议"],
     "packageName": "com.tencent.wemeet.app",
+    "harmonyBundleName": "com.tencent.meeting.app",
     "categories": ["会议"],
     "skill": "launch_only"
   },
@@ -116,6 +125,7 @@
     "name": "腾讯视频",
     "aliases": ["腾讯视频"],
     "packageName": "com.tencent.qqlive",
+    "harmonyBundleName": "com.tencent.videohm",
     "categories": ["长视频"],
     "skill": "tencent_video_playback"
   },
@@ -124,6 +134,7 @@
     "name": "爱奇艺",
     "aliases": ["爱奇艺", "爱奇艺体育"],
     "packageName": "com.qiyi.video",
+    "harmonyBundleName": "com.qiyi.video.hmy",
     "categories": ["长视频", "直播"],
     "skill": "launch_only"
   },
@@ -164,6 +175,7 @@
     "name": "华为视频",
     "aliases": ["华为视频"],
     "packageName": "com.huawei.himovie",
+    "harmonyBundleName": "com.huawei.hmsapp.himovie",
     "categories": ["长视频"],
     "skill": "launch_only"
   },
@@ -188,6 +200,7 @@
     "name": "淘宝",
     "aliases": ["淘宝", "点淘", "淘宝（点淘）"],
     "packageName": "com.taobao.taobao",
+    "harmonyBundleName": "com.taobao.taobao4hmos",
     "categories": ["直播"],
     "skill": "live_entry"
   },
@@ -196,6 +209,7 @@
     "name": "京东",
     "aliases": ["京东", "京东直播", "京东支付"],
     "packageName": "com.jingdong.app.mall",
+    "harmonyBundleName": "com.jd.hm.mall",
     "categories": ["电商", "直播", "支付"],
     "skill": "live_entry"
   },
@@ -204,6 +218,7 @@
     "name": "腾讯体育",
     "aliases": ["腾讯体育", "腾讯体育直播"],
     "packageName": "com.tencent.qqsports",
+    "harmonyBundleName": "com.tencent.qqsports.hm",
     "categories": ["直播"],
     "skill": "launch_only"
   },
@@ -220,6 +235,7 @@
     "name": "支付宝",
     "aliases": ["支付宝", "支付宝支付"],
     "packageName": "com.eg.android.AlipayGphone",
+    "harmonyBundleName": "com.alipay.mobile.client",
     "categories": ["支付", "出行"],
     "skill": "launch_only"
   },
@@ -236,6 +252,7 @@
     "name": "华为钱包",
     "aliases": ["华为钱包"],
     "packageName": "com.huawei.wallet",
+    "harmonyBundleName": "com.huawei.hmos.wallet",
     "categories": ["支付"],
     "skill": "launch_only"
   },
@@ -276,6 +293,7 @@
     "name": "高德地图",
     "aliases": ["高德", "高德地图"],
     "packageName": "com.autonavi.minimap",
+    "harmonyBundleName": "com.amap.hmapp",
     "categories": ["导航", "出行"],
     "skill": "amap_navigation"
   },
@@ -292,6 +310,7 @@
     "name": "花瓣地图",
     "aliases": ["花瓣地图"],
     "packageName": "com.huawei.maps.app",
+    "harmonyBundleName": "com.huawei.hmos.maps.app",
     "categories": ["导航"],
     "skill": "launch_only"
   },
@@ -356,6 +375,7 @@
     "name": "应用市场",
     "aliases": ["应用市场", "应用商店"],
     "packageName": "com.bbk.appstore",
+    "harmonyBundleName": "com.huawei.hmsapp.appgallery",
     "categories": ["上传下载"],
     "skill": "launch_only"
   },
@@ -372,6 +392,7 @@
     "name": "百度网盘",
     "aliases": ["百度网盘"],
     "packageName": "com.baidu.netdisk",
+    "harmonyBundleName": "com.baidu.netdisk.hmos",
     "categories": ["上传下载"],
     "skill": "launch_only"
   },
@@ -380,6 +401,7 @@
     "name": "豆包",
     "aliases": ["豆包"],
     "packageName": "com.larus.nova",
+    "harmonyBundleName": "com.larus.nova.hm",
     "categories": ["AI应用"],
     "skill": "doubao_chat",
     "skillConfig": {
@@ -403,6 +425,7 @@
     "name": "千问",
     "aliases": ["千问", "通义千问"],
     "packageName": "com.aliyun.tongyi",
+    "harmonyBundleName": "com.aliyun.tongyi4ohos",
     "categories": ["AI应用"],
     "skill": "ai_chat"
   },
@@ -411,6 +434,7 @@
     "name": "小艺",
     "aliases": ["小艺"],
     "packageName": "com.huawei.vassistant",
+    "harmonyBundleName": "com.huawei.hmos.vassistant",
     "categories": ["AI应用"],
     "skill": "launch_only"
   }

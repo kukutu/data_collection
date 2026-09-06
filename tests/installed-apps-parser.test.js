@@ -2,9 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { loadApps } from '../server/src/app-registry.js';
+import { installedKnownApps } from '../server/src/app-registry.js';
 import { parseTaskFallback } from '../server/src/task-parser.js';
 
 const apps = loadApps();
+
+test('marks an app installed when its Harmony bundle is present', () => {
+  const result = installedKnownApps(
+    [
+      {
+        name: 'Douyin',
+        packageName: 'com.ss.android.ugc.aweme',
+        harmonyBundleName: 'com.ss.hm.ugc.aweme',
+      },
+    ],
+    'ID: 100:\n\tcom.ss.hm.ugc.aweme\n',
+  );
+
+  assert.equal(result[0].installed, true);
+  assert.equal(result[0].installedVia, 'hdc');
+});
 
 test('parses installed generic media apps into playback sessions', () => {
   const bili = parseTaskFallback('看5分钟B站', apps);

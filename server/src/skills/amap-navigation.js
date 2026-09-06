@@ -40,6 +40,8 @@ export function buildAmapNavigationPlan({
       y: Math.round(size.height * 0.92),
       label: '尝试点击开始导航',
     },
+    { type: 'assert_foreground_package', packageName: app.packageName, label: '确认仍在高德地图' },
+    { type: 'start_capture', label: '开始采集导航内容' },
   ];
 
   let elapsed = steps

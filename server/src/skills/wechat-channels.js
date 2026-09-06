@@ -71,6 +71,7 @@ export function buildWechatChannelsPlan({
       label: '确认视频号画面在播放',
       message: '微信视频号画面变化不足，疑似未进入视频号播放内容',
     },
+    { type: 'start_capture', label: '开始采集微信视频号内容' },
   ];
 
   let elapsed = steps.filter((step) => step.type === 'wait').reduce((sum, step) => sum + step.ms, 0);

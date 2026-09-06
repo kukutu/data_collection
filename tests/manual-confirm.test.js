@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { loadApps } from '../server/src/app-registry.js';
 import { TaskManager } from '../server/src/harness.js';
+import { getWorkflowCatalog } from '../server/src/workflow-registry.js';
 
 test('TaskManager pauses at manual confirmation and continues after confirmation', async () => {
   const adb = createFakeAdb();
@@ -24,10 +25,70 @@ test('TaskManager pauses at manual confirmation and continues after confirmation
   assert.ok(adb.swipes.length > 0, 'feed swipes should happen after confirmation');
 });
 
-function createFakeAdb() {
+test('completed tasks do not automatically mark an app as tested', async () => {
+  const adb = createFakeAdb();
+  const apps = loadApps();
+  const douyin = apps.find((app) => app.id === 'douyin');
+  douyin.tested = false;
+  const manager = new TaskManager({ adb, apps });
+  const started = manager.start({ taskText: '打开抖音', parseMode: 'rules' });
+
+  const completed = await waitForTask(manager, started.id, (task) => task.status === 'completed');
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(douyin.tested, false);
+  assert.equal(completed.deviceSession.serial, 'fake-device-1');
+  assert.deepEqual(
+    adb.deviceLocks.map((entry) => entry.type),
+    ['begin', 'end'],
+  );
+});
+
+test('TaskManager keeps shortcut workflow metadata while hiding sensitive parameters', async () => {
+  const adb = createFakeAdb('com.ss.android.ugc.aweme');
+  const manager = new TaskManager({
+    adb,
+    apps: loadApps(),
+    workflows: getWorkflowCatalog(loadApps()),
+  });
+  const started = manager.start({
+    taskText: '打开抖音',
+    parseMode: 'rules',
+    workflowId: 'short-video:douyin:short-video-feed',
+    parameters: {
+      duration: { amount: 30, unit: '秒' },
+    },
+  });
+
+  assert.equal(started.workflowId, 'short-video:douyin:short-video-feed');
+  assert.equal(started.workflowName, '抖音短视频');
+  assert.deepEqual(started.parameters, {
+    duration: { amount: 30, unit: '秒' },
+  });
+  await waitForTask(manager, started.id, (task) => task.status === 'completed');
+});
+
+function createFakeAdb(focusPackage = 'com.xingin.xhs') {
   let screenshotCount = 0;
   const adb = {
     swipes: [],
+    deviceLocks: [],
+    async beginSession({ owner }) {
+      const lock = {
+        id: `lock-${adb.deviceLocks.length + 1}`,
+        owner,
+        connected: true,
+        provider: 'hdc',
+        platform: 'harmony',
+        serial: 'fake-device-1',
+        screen: { width: 1260, height: 2800 },
+      };
+      adb.deviceLocks.push({ type: 'begin', lock });
+      return lock;
+    },
+    async endSession(lock) {
+      adb.deviceLocks.push({ type: 'end', lock });
+    },
     async forceStopPackage() {},
     async launchPackage() {},
     async assertNoSensitivePrompt() {},
@@ -38,7 +99,7 @@ function createFakeAdb() {
       return { width: 1260, height: 2800 };
     },
     async getCurrentFocus() {
-      return { packageName: 'com.xingin.xhs', activity: 'com.xingin.matrix.notedetail.NoteDetailActivity' };
+      return { packageName: focusPackage, activity: 'com.example.MainActivity' };
     },
     async getUiTextSnapshot() {
       return { text: 'RED' };

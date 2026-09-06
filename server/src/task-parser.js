@@ -2,6 +2,9 @@ import { findAppByName } from './app-registry.js';
 
 const SUPPORTED_LIVE_ENTRY_APP_IDS = new Set(['douyin', 'taobao', 'jd', 'wechat', 'xiaohongshu']);
 const DEFAULT_AI_CHAT_INTERVAL_MS = 8 * 1000;
+const DEFAULT_WECHAT_MESSAGE_INTERVAL_MS = 8 * 1000;
+const DEFAULT_WECHAT_MEDIA_INTERVAL_MS = 8 * 1000;
+const DEFAULT_WECHAT_MEDIA_DURATION_MS = 5 * 60 * 1000;
 
 const CHINESE_DIGITS = {
   零: 0,
@@ -32,6 +35,46 @@ export function parseTaskFallback(taskText, apps = []) {
 
   const app = findAppByName(apps, text);
   const appName = app?.name || null;
+
+  if (
+    app?.id === 'wechat' &&
+    /(发图|发送图片|发视频|发送视频|图片或视频|发图\/发视频)/.test(text)
+  ) {
+    const sendCount = parseSendCount(text);
+    const durationMs = parseDurationMs(text);
+    const sendMode =
+      sendCount != null
+        ? 'count'
+        : durationMs != null || /循环|按时长/.test(text)
+          ? 'duration'
+          : 'count';
+    return {
+      intent: 'wechat_send_media',
+      appName,
+      targetMode: 'first',
+      mediaIndex: 0,
+      sendMode,
+      sendCount: sendMode === 'count' ? sendCount ?? 1 : null,
+      durationMs:
+        sendMode === 'duration'
+          ? durationMs ?? DEFAULT_WECHAT_MEDIA_DURATION_MS
+          : null,
+      intervalMs: parseSwitchIntervalMs(text) ?? DEFAULT_WECHAT_MEDIA_INTERVAL_MS,
+    };
+  }
+
+  if (
+    app?.id === 'wechat' &&
+    /(发消息|发送消息|收发消息|循环发消息|循环发送消息)/.test(text)
+  ) {
+    return {
+      intent: 'wechat_send_messages',
+      appName,
+      durationMs: parseDurationMs(text) ?? 5 * 60 * 1000,
+      intervalMs: parseSwitchIntervalMs(text) ?? DEFAULT_WECHAT_MESSAGE_INTERVAL_MS,
+      targetMode: 'first',
+    };
+  }
 
   if (
     app?.id === 'wechat' &&
@@ -217,6 +260,21 @@ export function parseSwitchIntervalMs(text) {
   const amount = parseAmount(match[1] || '一');
   if (amount == null) return null;
   return Math.round(amountToMs(amount, match[2]));
+}
+
+export function parseSendCount(text) {
+  const source = String(text || '').replace(
+    /(?:每|间隔|隔)\s*(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百半]+)?\s*(?:小时|分钟|秒)\s*(?:发送|发)?\s*一次/g,
+    '',
+  );
+  const match = source.match(
+    /(?:发送|发)?\s*(\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百]+)\s*(?:次|条)/,
+  );
+  if (!match) return null;
+
+  const amount = parseAmount(match[1]);
+  if (amount == null || amount <= 0) return null;
+  return Math.max(1, Math.round(amount));
 }
 
 export function extractNavigationDestination(text) {

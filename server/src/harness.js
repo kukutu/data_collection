@@ -13,18 +13,48 @@ import { buildGenericMediaPlaybackPlan } from './skills/generic-media.js';
 import { buildLiveEntryPlan } from './skills/live-entry.js';
 import { buildTencentVideoPlaybackPlan } from './skills/tencent-video.js';
 import { buildWechatChannelsPlan } from './skills/wechat-channels.js';
+import { buildWechatMessagesPlan } from './skills/wechat-messages.js';
+import {
+  executeWechatMediaTransfer,
+  WECHAT_MEDIA_WORKFLOW_ID,
+} from './skills/wechat-media.js';
+import { findWorkflow } from './workflow-registry.js';
 
 export class TaskManager {
-  constructor({ adb, apps }) {
+  constructor({
+    adb,
+    apps,
+    captureManager = null,
+    workflows = [],
+    wechatMediaExecutor = executeWechatMediaTransfer,
+  }) {
     this.adb = adb;
     this.apps = apps;
+    this.captureManager = captureManager;
+    this.workflows = workflows;
+    this.wechatMediaExecutor = wechatMediaExecutor;
     this.tasks = new Map();
   }
 
-  start({ taskText, apiKey, useModel = false, parseMode }) {
+  start({
+    taskText,
+    apiKey,
+    useModel = false,
+    parseMode,
+    capture,
+    workflowId = null,
+    parameters = {},
+  }) {
+    const workflow = workflowId ? findWorkflow(this.workflows, workflowId) : null;
+    if (workflowId && !workflow) throw new Error(`未找到功能: ${workflowId}`);
+
     const task = {
       id: randomUUID(),
       input: taskText,
+      workflowId: workflow?.id || null,
+      workflowName: workflow?.featureName || null,
+      parameterSchema: workflow?.params || [],
+      parameters: sanitizeTaskParameters(workflow?.params || [], parameters),
       status: 'running',
       stepIndex: 0,
       totalSteps: 0,
@@ -35,10 +65,11 @@ export class TaskManager {
     };
 
     this.tasks.set(task.id, task);
-    this.#run(task, { apiKey, useModel, parseMode }).catch((error) => {
+    this.#run(task, { apiKey, useModel, parseMode, capture }).catch((error) => {
       if (task.status === 'stopped') return;
       task.status = 'failed';
       task.error = error.message;
+      task.finishedAt = new Date().toISOString();
       this.#log(task, `失败: ${error.message}`);
     });
 
@@ -48,9 +79,17 @@ export class TaskManager {
   snapshot(taskId) {
     const task = this.tasks.get(taskId);
     if (!task) return null;
+    const capture =
+      task.capture?.id && this.captureManager
+        ? this.captureManager.snapshot(task.capture.id) || task.capture
+        : task.capture;
     return {
       id: task.id,
       input: task.input,
+      workflowId: task.workflowId,
+      workflowName: task.workflowName,
+      parameterSchema: task.parameterSchema,
+      parameters: task.parameters,
       status: task.status,
       parsed: task.parsed,
       stepIndex: task.stepIndex,
@@ -58,6 +97,11 @@ export class TaskManager {
       logs: task.logs.slice(-200),
       error: task.error,
       pendingConfirmation: task.pendingConfirmation,
+      capture,
+      captureError: task.captureError,
+      sentCount: task.sentCount,
+      effectiveDurationMs: task.effectiveDurationMs,
+      deviceSession: task.deviceSession,
       startedAt: task.startedAt,
       finishedAt: task.finishedAt,
     };
@@ -86,9 +130,15 @@ export class TaskManager {
     return true;
   }
 
-  async #run(task, { apiKey, useModel, parseMode }) {
+  async #run(task, { apiKey, useModel, parseMode, capture }) {
     this.#log(task, '开始解析任务');
-    task.parsed = await this.#parse(task.input, { apiKey, useModel, parseMode });
+    task.parsed = applyWorkflowParameters(
+      await this.#parse(task.input, { apiKey, useModel, parseMode }),
+      {
+        workflowId: task.workflowId,
+        parameters: task.parameters,
+      },
+    );
     this.#log(task, `解析结果: ${JSON.stringify(task.parsed)}`);
 
     const safety = evaluateSafety(task.parsed, task.input);
@@ -100,13 +150,80 @@ export class TaskManager {
       return;
     }
 
-    await this.#execute(task);
-
-    if (task.status !== 'stopped') {
-      task.status = 'completed';
-      task.finishedAt = new Date().toISOString();
-      this.#log(task, '任务完成');
+    let captureSession = null;
+    let deviceLock = null;
+    let outcome = 'completed';
+    let runError = null;
+    task.captureConfig = capture?.enabled ? capture : null;
+    try {
+      if (typeof this.adb.beginSession === 'function') {
+        deviceLock = await this.adb.beginSession({ owner: `task:${task.id}` });
+        task.deviceSession = sanitizeDeviceSession(deviceLock);
+        this.#log(
+          task,
+          `已锁定设备 ${deviceLock.serial || deviceLock.provider || 'unknown'}`,
+        );
+      }
+      this.#assertNotStopped(task);
+      await this.#execute(task);
+    } catch (error) {
+      runError = error;
+      outcome = task.stopped || error instanceof TaskStoppedError ? 'stopped' : 'failed';
+    } finally {
+      captureSession ||= task.captureSession;
+      if (captureSession) {
+        try {
+          task.capture = await this.captureManager.stop(captureSession.id, { reason: outcome });
+          this.#log(task, `采集已完成: ${task.capture.outputDir}`);
+        } catch (error) {
+          task.captureError = error.message;
+          this.#log(task, `采集收尾失败: ${error.message}`);
+        }
+      }
+      if (deviceLock && typeof this.adb.endSession === 'function') {
+        try {
+          await this.adb.endSession(deviceLock);
+        } catch (error) {
+          if (!runError) {
+            runError = error;
+            outcome = 'failed';
+          }
+          this.#log(task, `释放设备锁失败: ${error.message}`);
+        }
+      }
     }
+
+    if (outcome === 'stopped') {
+      task.status = 'stopped';
+      task.finishedAt ||= new Date().toISOString();
+      this.#log(task, '任务已停止');
+      return;
+    }
+
+    if (runError) throw runError;
+
+    task.status = 'completed';
+    task.finishedAt = new Date().toISOString();
+    this.#log(task, '任务完成');
+  }
+
+  async #startCapture(task, capture) {
+    const app = this.#resolveApp(task.parsed?.appName);
+    const deviceStatus = await this.adb.getDeviceStatus();
+    return this.captureManager.start({
+      taskId: task.id,
+      appName: app.name,
+      businessName: inferBusinessName(task.parsed),
+      packageName: app.packageName,
+      bundleName: app.harmonyBundleName,
+      phoneIp: capture.phoneIp,
+      interfaceName: capture.interfaceName,
+      outputRoot: capture.outputRoot,
+      deviceStatus,
+      recordScreen: capture.recordScreen !== false,
+      recordPortMapping: capture.recordPortMapping !== false,
+      extractorScript: capture.extractorScript,
+    });
   }
 
   async #parse(taskText, { apiKey, useModel, parseMode }) {
@@ -162,6 +279,10 @@ export class TaskManager {
         return this.#amapNavigation(task);
       case 'wechat_channels_feed':
         return this.#wechatChannels(task);
+      case 'wechat_send_messages':
+        return this.#wechatMessages(task);
+      case 'wechat_send_media':
+        return this.#wechatMedia(task);
       case 'ai_chat':
         return this.#aiChat(task);
       case 'doubao_chat':
@@ -179,6 +300,7 @@ export class TaskManager {
     const app = this.#resolveApp(task.parsed.appName);
     this.#log(task, `打开 ${app.name}`);
     await this.adb.launchPackage(app.packageName);
+    await this.#ensureCapture(task);
   }
 
   async #watchFeed(task) {
@@ -221,11 +343,15 @@ export class TaskManager {
       throw new Error('doubao_chat 只能用于豆包 App');
     }
 
+    const deviceStatus = await this.adb.getDeviceStatus?.().catch(() => null);
+    const screen = deviceStatus?.screen || (await this.adb.getScreenSize().catch(() => null));
     const steps = buildDoubaoChatPlan({
       app,
       durationMs: task.parsed.durationMs,
       intervalMs: task.parsed.intervalMs,
       messages: task.parsed.messages,
+      platform: deviceStatus?.platform,
+      screen: screen || undefined,
     });
 
     await this.#runSteps(task, steps);
@@ -289,6 +415,61 @@ export class TaskManager {
     await this.#runSteps(task, steps);
   }
 
+  async #wechatMessages(task) {
+    const app = this.#resolveApp(task.parsed.appName || '微信');
+    if (app.id !== 'wechat') {
+      throw new Error('wechat_send_messages 只能用于微信 App');
+    }
+    if (task.parsed.targetMode && task.parsed.targetMode !== 'first') {
+      throw new Error('微信发消息当前只支持聊天列表中的第一个会话');
+    }
+
+    const deviceStatus = await this.adb.getDeviceStatus?.().catch(() => null);
+    const screen = deviceStatus?.screen || (await this.adb.getScreenSize().catch(() => null));
+    const steps = buildWechatMessagesPlan({
+      app,
+      durationMs: task.parsed.durationMs,
+      intervalMs: task.parsed.intervalMs,
+      platform: deviceStatus?.platform,
+      screen: screen || undefined,
+    });
+
+    await this.#runSteps(task, steps);
+  }
+
+  async #wechatMedia(task) {
+    const app = this.#resolveApp(task.parsed.appName || '微信');
+    if (app.id !== 'wechat') {
+      throw new Error('wechat_send_media 只能用于微信 App');
+    }
+    if (task.parsed.targetMode && task.parsed.targetMode !== 'first') {
+      throw new Error('微信发图/视频当前只支持聊天列表中的第一个会话');
+    }
+
+    const result = await this.wechatMediaExecutor({
+      device: this.adb,
+      app,
+      sendMode: task.parsed.sendMode,
+      sendCount: task.parsed.sendCount,
+      durationMs: task.parsed.durationMs,
+      intervalMs: task.parsed.intervalMs,
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, totalSteps) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = totalSteps;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.sentCount = result.sentCount;
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+  }
+
   async #liveEntry(task) {
     const app = this.#resolveApp(task.parsed.appName);
     const screen = await this.adb.getScreenSize().catch(() => null);
@@ -322,10 +503,14 @@ export class TaskManager {
     for (const [index, step] of steps.entries()) {
       this.#assertNotStopped(task);
       task.stepIndex = index + 1;
-      if (!step.silent) {
-        this.#log(task, step.label || step.type);
+      const executableStep = withReferenceScreen(
+        step,
+        task.deviceSession?.screen,
+      );
+      if (!executableStep.silent) {
+        this.#log(task, executableStep.label || executableStep.type);
       }
-      await this.#executeStep(step, task);
+      await this.#executeStep(executableStep, task);
     }
   }
 
@@ -336,6 +521,9 @@ export class TaskManager {
 
   async #executeStep(step, task) {
     switch (step.type) {
+      case 'start_capture':
+        await this.#ensureCapture(task);
+        return;
       case 'launch_app':
         await this.adb.launchPackage(step.packageName);
         return;
@@ -403,6 +591,9 @@ export class TaskManager {
       case 'assert_ui_text':
         await this.#assertUiText(step);
         return;
+      case 'assert_ui_node':
+        await this.#assertUiNode(step);
+        return;
       case 'assert_ui_text_or_activity':
         await this.#assertUiTextOrActivity(step);
         return;
@@ -425,13 +616,39 @@ export class TaskManager {
         await this.#manualConfirm(step, task);
         return;
       case 'input_text':
-        await this.adb.inputText(step.text);
+        await this.adb.inputText(step.text, {
+          clearExisting: Boolean(step.clearExisting),
+          x: step.x,
+          y: step.y,
+          target: step.target,
+          anchor: step.anchor,
+          referenceScreen: step.referenceScreen,
+        });
+        return;
+      case 'input_key_text':
+        await this.adb.inputKeyText(step.text, {
+          clearExisting: Boolean(step.clearExisting),
+          clearCharacters: step.clearCharacters,
+        });
+        return;
+      case 'loop_text_messages':
+        await this.#loopTextMessages(step, task);
         return;
       case 'complete':
         return;
       default:
         throw new Error(`unknown step type: ${step.type}`);
     }
+  }
+
+  async #ensureCapture(task) {
+    if (!task.captureConfig?.enabled || task.captureSession) return;
+    if (!this.captureManager) throw new Error('采集功能尚未配置');
+
+    const captureSession = await this.#startCapture(task, task.captureConfig);
+    task.captureSession = captureSession;
+    task.capture = captureSession;
+    this.#log(task, `采集已启动: ${captureSession.outputDir}`);
   }
 
   #resolveApp(appName) {
@@ -479,7 +696,10 @@ export class TaskManager {
       if (step.landscape && orientation?.isLandscape) return;
 
       const tap = taps[attempt % taps.length];
-      await this.adb.tap(tap);
+      await this.adb.tap({
+        ...tap,
+        referenceScreen: tap.referenceScreen || step.referenceScreen,
+      });
       await this.#sleep(waitMs, task);
     }
 
@@ -513,6 +733,78 @@ export class TaskManager {
       if (step.optional) return;
       throw new Error(step.message || `屏幕出现了不应出现的内容: ${this.#describeMatchers(step.none)}`);
     }
+  }
+
+  async #assertUiNode(step) {
+    if (typeof this.adb.findUiNode !== 'function') {
+      if (step.optional) return;
+      throw new Error('当前设备适配器不支持 UI 节点检测');
+    }
+    const node = await this.adb.findUiNode({
+      types: step.types,
+      ids: step.ids,
+      keys: step.keys,
+      clickable: step.clickable,
+    });
+    if (!node && !step.optional) {
+      throw new Error(step.message || '屏幕未出现预期 UI 节点');
+    }
+  }
+
+  async #loopTextMessages(step, task) {
+    const messages = Array.isArray(step.messages)
+      ? step.messages.map((message) => String(message || '').trim()).filter(Boolean)
+      : [];
+    if (!messages.length) throw new Error('循环发消息缺少消息列表');
+
+    const durationMs = Math.max(1000, Number(step.durationMs) || 1000);
+    const intervalMs = Math.max(3000, Number(step.intervalMs) || 8000);
+    const input = step.input || {};
+    const send = step.send || {};
+
+    await this.adb.tap({
+      ...input,
+      referenceScreen: input.referenceScreen || step.referenceScreen,
+    });
+    await this.#sleep(600, task);
+
+    const startedAt = Date.now();
+    const deadline = startedAt + durationMs;
+    let nextSendAt = startedAt;
+    let sentCount = 0;
+
+    while (sentCount === 0 || nextSendAt < deadline) {
+      const waitMs = nextSendAt - Date.now();
+      if (waitMs > 0) await this.#sleep(waitMs, task);
+      this.#assertNotStopped(task);
+
+      const message = messages[sentCount % messages.length];
+      this.#log(task, `发送微信测试消息 ${sentCount + 1}`);
+      await this.adb.inputText(message, { clearExisting: true });
+      await this.#sleep(300, task);
+      await this.adb.tap({
+        ...send,
+        referenceScreen: send.referenceScreen || step.referenceScreen,
+      });
+      await this.#sleep(600, task);
+
+      if (sentCount === 0) {
+        const snapshot = await this.adb.getUiTextSnapshot();
+        const editor = await this.adb.findUiNode({
+          types: step.editorTypes || ['RichEditor'],
+          layout: snapshot.layout,
+        });
+        const editorText = String(editor?.attributes?.text || editor?.attributes?.originalText || '');
+        if (!String(snapshot?.text || '').includes(message) || editorText) {
+          throw new Error('微信首条测试消息未形成消息气泡，停止循环发送');
+        }
+      }
+
+      sentCount += 1;
+      nextSendAt = startedAt + sentCount * intervalMs;
+    }
+
+    this.#log(task, `微信循环发送结束，共发送 ${sentCount} 条`);
   }
 
   async #tapIfUiTextMatches(step) {
@@ -698,10 +990,127 @@ export class TaskManager {
   }
 }
 
+function withReferenceScreen(step, screen) {
+  if (!screen || step.referenceScreen) return step;
+  return {
+    ...step,
+    referenceScreen: {
+      width: Number(screen.width),
+      height: Number(screen.height),
+    },
+  };
+}
+
+function sanitizeDeviceSession(session) {
+  if (!session) return null;
+  return {
+    id: session.id,
+    provider: session.provider,
+    platform: session.platform,
+    serial: session.serial || '',
+    model: session.model || '',
+    screen: session.screen || null,
+  };
+}
+
 class TaskStoppedError extends Error {
   constructor() {
     super('task stopped');
   }
+}
+
+export function inferBusinessName(parsed = {}) {
+  switch (parsed.intent) {
+    case 'watch_feed':
+    case 'wechat_channels_feed':
+      return '短视频';
+    case 'wechat_send_messages':
+    case 'wechat_send_media':
+      return '传输';
+    case 'watch_live':
+    case 'live_entry':
+      return '直播';
+    case 'play_tencent_video':
+    case 'play_generic_media':
+      return '长视频';
+    case 'ai_chat':
+    case 'doubao_chat':
+      return 'AI应用';
+    case 'amap_navigation':
+      return '导航';
+    case 'launch_app':
+      return '启动';
+    default:
+      return parsed.intent || '未分类';
+  }
+}
+
+function sanitizeTaskParameters(schema, values) {
+  const result = {};
+  for (const parameter of schema) {
+    if (!(parameter.id in (values || {}))) continue;
+    result[parameter.id] = parameter.sensitive ? '[已隐藏]' : values[parameter.id];
+  }
+  return result;
+}
+
+export function applyWorkflowParameters(
+  parsed,
+  { workflowId = null, parameters = {} } = {},
+) {
+  if (workflowId !== WECHAT_MEDIA_WORKFLOW_ID) return parsed;
+
+  const requestedMode = parameters.sendMode ?? parsed?.sendMode;
+  const sendMode = requestedMode === 'duration' ? 'duration' : 'count';
+  const intervalMs = durationParameterToMs(
+    parameters.interval,
+    parsed?.intervalMs ?? 8000,
+  );
+  return {
+    ...parsed,
+    intent: 'wechat_send_media',
+    appName: '微信',
+    targetMode: 'first',
+    mediaIndex: 0,
+    sendMode,
+    sendCount:
+      sendMode === 'count'
+        ? positiveInteger(parameters.count ?? parsed?.sendCount, 3)
+        : null,
+    durationMs:
+      sendMode === 'duration'
+        ? durationParameterToMs(
+            parameters.duration,
+            parsed?.durationMs ?? 5 * 60 * 1000,
+          )
+        : null,
+    intervalMs,
+  };
+}
+
+function durationParameterToMs(value, fallbackMs) {
+  if (!value || typeof value !== 'object') {
+    return Math.max(1, Math.round(Number(fallbackMs) || 1));
+  }
+  const amount = Number(value.amount);
+  const factors = {
+    毫秒: 1,
+    秒: 1000,
+    分钟: 60 * 1000,
+    小时: 60 * 60 * 1000,
+  };
+  const factor = factors[value.unit] || 1000;
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return Math.max(1, Math.round(Number(fallbackMs) || 1));
+  }
+  return Math.max(1, Math.round(amount * factor));
+}
+
+function positiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0
+    ? Math.max(1, Math.round(number))
+    : fallback;
 }
 
 function normalizeMatchers(matchers) {

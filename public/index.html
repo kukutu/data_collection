@@ -37,6 +37,50 @@
             <textarea id="taskText" rows="4">刷30秒抖音</textarea>
           </label>
 
+          <section class="capture-settings" aria-labelledby="captureTitle">
+            <div class="capture-heading">
+              <h2 id="captureTitle">同步采集</h2>
+              <label class="toggle compact-toggle">
+                <input id="captureEnabled" type="checkbox" checked>
+                启用
+              </label>
+            </div>
+
+            <div class="capture-fields" id="captureFields">
+              <div class="field-row capture-row">
+                <label>
+                  Wireshark 网卡
+                  <input id="captureInterface" type="text" value="WLAN3">
+                </label>
+                <label>
+                  手机 IP
+                  <input id="capturePhoneIp" type="text" placeholder="可选">
+                </label>
+              </div>
+
+              <label>
+                保存目录
+                <input id="captureOutputRoot" type="text" value="D:\andorid_adb\data_collect">
+              </label>
+
+              <div class="capture-options">
+                <label class="toggle">
+                  <input id="captureRecordScreen" type="checkbox" checked>
+                  系统屏幕录制
+                </label>
+                <label class="toggle">
+                  <input id="captureRecordPortMapping" type="checkbox" checked>
+                  端口映射
+                </label>
+              </div>
+
+              <label>
+                流量提取脚本
+                <input id="captureExtractorScript" type="text" placeholder="可选">
+              </label>
+            </div>
+          </section>
+
           <div class="actions">
             <button type="submit">开始</button>
             <button type="button" id="stopBtn" class="secondary">停止</button>
@@ -44,37 +88,8 @@
 
           <section class="quick-panel" aria-label="快捷任务">
             <h2>快捷任务</h2>
-            <div class="quick-groups">
-              <section class="quick-group">
-                <h3>短视频</h3>
-                <button type="button" data-builder="short-video">刷短视频</button>
-              </section>
+            <div id="appCatalog" class="app-catalog"></div>
 
-              <section class="quick-group">
-                <h3>长视频</h3>
-                <button type="button" data-builder="long-video">播放视频</button>
-              </section>
-
-              <section class="quick-group">
-                <h3>直播</h3>
-                <button type="button" data-builder="live">直播浏览</button>
-              </section>
-
-              <section class="quick-group">
-                <h3>导航</h3>
-                <button type="button" data-builder="navigation">地图导航</button>
-              </section>
-
-              <section class="quick-group">
-                <h3>AI 应用</h3>
-                <button type="button" data-builder="ai-chat">AI 对话</button>
-              </section>
-
-              <section class="quick-group">
-                <h3>系统</h3>
-                <button type="button" data-command="回到桌面">回桌面</button>
-              </section>
-            </div>
           </section>
         </form>
 
@@ -84,6 +99,50 @@
             <span id="taskState">空闲</span>
           </div>
           <pre id="logs"></pre>
+          <div class="capture-result" id="captureResult" hidden>
+            <div class="capture-result-heading">
+              <h2>采集</h2>
+              <span id="captureState"></span>
+            </div>
+            <code id="captureOutput"></code>
+          </div>
+
+          <section class="recording-settings" aria-labelledby="recordingTitle">
+            <div class="recording-heading">
+              <div class="recording-title">
+                <h2 id="recordingTitle">动作录制</h2>
+              </div>
+              <span class="recording-state" id="recordingState">未录制</span>
+            </div>
+
+            <div class="field-row recording-row">
+              <label>
+                App
+                <select id="recordingApp"></select>
+              </label>
+              <label>
+                功能
+                <select id="recordingFeature"></select>
+              </label>
+            </div>
+
+            <div class="recording-parameters">
+              <div class="subsection-heading">
+                <span>参数设置</span>
+              </div>
+              <div class="parameter-fields" id="recordingParameters"></div>
+            </div>
+            <p class="parameter-hint" id="recordingParameterHint"></p>
+
+            <div class="recording-actions">
+              <button type="button" id="startRecordingBtn">开始录制</button>
+              <button type="button" id="stopRecordingBtn" class="secondary">结束录制</button>
+              <button type="button" id="repairRecordingBtn" class="secondary">模型纠正</button>
+              <button type="button" id="replayRecordingBtn" class="secondary">回放测试</button>
+            </div>
+            <p class="recording-message" id="recordingMessage"></p>
+            <code id="recordingOutput"></code>
+          </section>
         </section>
       </section>
     </main>
@@ -95,30 +154,18 @@
           <button type="button" class="icon-button" id="dialogCloseBtn" aria-label="关闭">×</button>
         </div>
 
-        <label>
-          App
-          <select id="builderApp"></select>
-        </label>
-
         <div class="field-row">
           <label>
-            时长
-            <input id="builderDuration" type="number" min="1" step="1" value="30">
+            App
+            <select id="builderApp"></select>
           </label>
           <label>
-            单位
-            <select id="builderUnit">
-              <option value="秒">秒</option>
-              <option value="分钟">分钟</option>
-              <option value="小时">小时</option>
-            </select>
+            功能
+            <select id="builderFunction"></select>
           </label>
         </div>
 
-        <label id="builderDestinationWrap" hidden>
-          目的地
-          <input id="builderDestination" type="text" value="北京站">
-        </label>
+        <div class="parameter-fields" id="builderParameters"></div>
 
         <p class="dialog-message" id="builderMessage"></p>
 
