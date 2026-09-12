@@ -38,7 +38,16 @@ export function installedKnownApps(apps, packageListText) {
     const harmonyInstalled = Boolean(
       app.harmonyBundleName && source.includes(app.harmonyBundleName),
     );
-    const installedVia = androidInstalled ? 'adb' : harmonyInstalled ? 'hdc' : null;
+    const compatibilityHostInstalled = Boolean(
+      app.harmonyLaunch?.compatibility &&
+        app.harmonyCompatibilityHostBundleName &&
+        source.includes(app.harmonyCompatibilityHostBundleName),
+    );
+    const installedVia = androidInstalled
+      ? 'adb'
+      : harmonyInstalled || compatibilityHostInstalled
+        ? 'hdc'
+        : null;
     return {
       ...app,
       installed: Boolean(installedVia),

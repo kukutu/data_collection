@@ -37,10 +37,30 @@ test('parses meeting tasks as unsupported flows', () => {
   assert.equal(voip.appName, '微信');
 });
 
-test('parses upload/download tasks as unsupported flows', () => {
+test('parses explicit WeChat audio and video calls to the first conversation', () => {
+  const audio = parseTaskFallback('在微信向第一个联系人发起音频通话 2分钟', apps);
+  const video = parseTaskFallback('在微信向第一个联系人发起视频通话', apps);
+
+  assert.deepEqual(audio, {
+    intent: 'wechat_voip_call',
+    appName: '微信',
+    targetMode: 'first',
+    callType: 'audio',
+    durationMs: 2 * 60 * 1000,
+  });
+  assert.deepEqual(video, {
+    intent: 'wechat_voip_call',
+    appName: '微信',
+    targetMode: 'first',
+    callType: 'video',
+    durationMs: 30 * 1000,
+  });
+});
+
+test('parses unimplemented upload/download tasks as unsupported flows', () => {
   const download = parseTaskFallback('测试2分钟百度网盘下载', apps);
 
-  assert.equal(download.intent, 'unsupported_flow');
+  assert.equal(download.intent, 'baidu_netdisk_download');
   assert.equal(download.appName, '百度网盘');
 });
 
@@ -64,6 +84,23 @@ test('parses installed actual app-specific sessions', () => {
   assert.equal(ai.intent, 'ai_chat');
 });
 
+test('parses Kuaishou live browsing as a supported live entry task', () => {
+  const parsed = parseTaskFallback('看30秒快手直播', apps);
+
+  assert.equal(parsed.intent, 'live_entry');
+  assert.equal(parsed.appName, '快手');
+  assert.equal(parsed.durationMs, 30 * 1000);
+});
+
+test('parses iQiyi live browsing as a supported live entry task', () => {
+  const parsed = parseTaskFallback('看30秒爱奇艺直播，每5秒下滑一次', apps);
+
+  assert.equal(parsed.intent, 'live_entry');
+  assert.equal(parsed.appName, '爱奇艺');
+  assert.equal(parsed.durationMs, 30 * 1000);
+  assert.equal(parsed.switchIntervalMs, 5 * 1000);
+});
+
 test('parses AI chat with a short default interval and keeps explicit intervals', () => {
   const defaultInterval = parseTaskFallback('和千问聊天', apps);
   const explicitInterval = parseTaskFallback('和千问聊天 每5秒', apps);
@@ -72,6 +109,36 @@ test('parses AI chat with a short default interval and keeps explicit intervals'
   assert.equal(defaultInterval.intervalMs, 8000);
   assert.equal(explicitInterval.intent, 'ai_chat');
   assert.equal(explicitInterval.intervalMs, 5000);
+});
+
+test('parses DeepSeek chat through the shared AI chat intent', () => {
+  const parsed = parseTaskFallback('和DeepSeek聊天5分钟 每8秒', apps);
+
+  assert.equal(parsed.intent, 'ai_chat');
+  assert.equal(parsed.appName, 'DeepSeek');
+  assert.equal(parsed.durationMs, 5 * 60 * 1000);
+  assert.equal(parsed.intervalMs, 8000);
+  assert.equal(parsed.language, 'en');
+});
+
+test('parses Qianwen chat through its dedicated skill', () => {
+  const parsed = parseTaskFallback('和千问聊天7秒 每4秒发送一次', apps);
+
+  assert.equal(parsed.intent, 'ai_chat');
+  assert.equal(parsed.appName, '千问');
+  assert.equal(parsed.durationMs, 7000);
+  assert.equal(parsed.intervalMs, 4000);
+  assert.equal(parsed.language, 'en');
+});
+
+test('parses Xiaoyi chat through its dedicated skill', () => {
+  const parsed = parseTaskFallback('和小艺聊天7秒 每4秒发送一次', apps);
+
+  assert.equal(parsed.intent, 'ai_chat');
+  assert.equal(parsed.appName, '小艺');
+  assert.equal(parsed.durationMs, 7000);
+  assert.equal(parsed.intervalMs, 4000);
+  assert.equal(parsed.language, 'en');
 });
 
 test('parses common WeChat Channels wording even when user says 微信号视频', () => {

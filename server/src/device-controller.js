@@ -5,9 +5,11 @@ const DEVICE_METHODS = [
   'getDisplayOrientation',
   'getMediaPlaybackState',
   'forceStopPackage',
+  'uninstallPackage',
   'launchPackage',
   'startUiRecording',
   'readUiRecording',
+  'recoverUiRecording',
   'startActivity',
   'keyevent',
   'openUri',
@@ -353,9 +355,10 @@ export function resolveSwipeCoordinates(swipe = {}, targetScreen = null) {
 
 async function findTargetNode(adapter, target) {
   const resourceId = target.resourceId || target.id;
+  const genericIds = target.ids || (resourceId ? [resourceId] : []);
   if (resourceId && typeof adapter.findResourceNode === 'function') {
     const node = await adapter.findResourceNode(resourceId);
-    if (node) return node;
+    if (node && nodeMatchesTarget(node, target)) return node;
   }
 
   const texts = target.texts || target.text;
@@ -364,18 +367,22 @@ async function findTargetNode(adapter, target) {
       partial: Boolean(target.partial),
       region: target.region,
     });
-    if (node) return node;
+    if (node && nodeMatchesTarget(node, target)) return node;
   }
 
   if (
     typeof adapter.findUiNode === 'function' &&
-    (target.types || target.ids || target.keys || typeof target.clickable === 'boolean')
+    (target.types ||
+      genericIds.length ||
+      target.keys ||
+      typeof target.clickable === 'boolean')
   ) {
     return adapter.findUiNode({
       types: target.types,
-      ids: target.ids,
+      ids: genericIds,
       keys: target.keys,
       clickable: target.clickable,
+      region: target.region,
     });
   }
   return null;
@@ -395,6 +402,42 @@ function getNodeCenter(node) {
     x: Math.round((bounds.x1 + bounds.x2) / 2),
     y: Math.round((bounds.y1 + bounds.y2) / 2),
   };
+}
+
+function nodeMatchesTarget(node, target) {
+  const center = getNodeCenter(node);
+  if (target.region && center && !pointInRegion(center, target.region)) {
+    return false;
+  }
+  const types = Array.isArray(target.types)
+    ? target.types
+    : target.types
+      ? [target.types]
+      : [];
+  if (!types.length) return true;
+  const actual = String(
+    node?.attributes?.type ||
+      node?.attributes?.className ||
+      node?.type ||
+      node?.className ||
+      '',
+  );
+  return !actual || types.some((type) => String(type) === actual);
+}
+
+function pointInRegion(point, region) {
+  const minX = finiteNumber(region.minX ?? region.x1) ?? 0;
+  const minY = finiteNumber(region.minY ?? region.y1) ?? 0;
+  const maxX =
+    finiteNumber(region.maxX ?? region.x2) ?? Number.POSITIVE_INFINITY;
+  const maxY =
+    finiteNumber(region.maxY ?? region.y2) ?? Number.POSITIVE_INFINITY;
+  return (
+    point.x >= minX &&
+    point.x <= maxX &&
+    point.y >= minY &&
+    point.y <= maxY
+  );
 }
 
 function normalizeBounds(bounds) {

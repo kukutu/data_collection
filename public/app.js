@@ -468,6 +468,8 @@ async function pollTask() {
 function renderTask(task) {
   elements.taskState.textContent = `${task.status || 'unknown'} ${task.stepIndex || 0}/${task.totalSteps || 0}`;
   elements.confirmMessage.textContent = task.pendingConfirmation?.message || '';
+  elements.continueBtn.textContent =
+    task.pendingConfirmation?.confirmLabel || '确认完成，继续';
   setConfirmDialogOpen(task.status === 'waiting_confirmation');
   elements.logs.textContent = (task.logs || [])
     .map((entry) => `${new Date(entry.at).toLocaleTimeString()}  ${entry.message}`)
@@ -598,6 +600,7 @@ function resetRecordingView() {
   state.recordingId = null;
   elements.recordingState.textContent = '未录制';
   elements.recordingState.dataset.validationStatus = 'unverified';
+  elements.recordingState.dataset.validationSource = '';
   elements.recordingState.dataset.recordingQuality = '';
   elements.recordingMessage.textContent = '';
   elements.recordingOutput.textContent = '';
@@ -797,15 +800,21 @@ function renderRecording(recording) {
   };
   const statusLabel =
     recording.validationStatus === 'verified' && recording.status === 'replayed'
-      ? '验证通过'
+      ? recording.validationSource === 'workflow_skill'
+        ? 'Skill 验证通过'
+        : '轨迹验证通过'
       : recording.status === 'stopped' && recording.validationStatus !== 'verified'
         ? '待回放验证'
-      : statusLabels[recording.status] || recording.status || '未知';
+        : statusLabels[recording.status] || recording.status || '未知';
   elements.recordingState.textContent = statusLabel;
   elements.recordingState.dataset.validationStatus = recording.validationStatus || 'unverified';
+  elements.recordingState.dataset.validationSource = recording.validationSource || '';
   elements.recordingState.dataset.recordingQuality = recording.recordingQuality || '';
   const stepCount = Number(recording.stepCount ?? recording.steps?.length ?? 0);
   const parts = [`动作 ${stepCount} 步`];
+  if (Number(recording.semanticStepCount) > stepCount) {
+    parts.push(`语义轨迹 ${recording.semanticStepCount} 步`);
+  }
   const currentWorkflowName = workflow?.featureName || recording.workflowName;
   if (currentWorkflowName) parts.unshift(currentWorkflowName);
   if (recording.timelineQuality) {
@@ -819,9 +828,9 @@ function renderRecording(recording) {
   }
   if (recording.recordingQuality) {
     const qualityLabels = {
-      good: '录制质量良好',
-      review_required: '录制质量待检查',
-      unusable: '录制不可用',
+      good: '动作采集可用',
+      review_required: '动作采集待检查',
+      unusable: '动作采集不可用',
     };
     const score = Number.isFinite(recording.qualityScore)
       ? ` ${recording.qualityScore} 分`
@@ -838,6 +847,45 @@ function renderRecording(recording) {
   }
   if (Number(recording.contextCount) > 0) {
     parts.push(`界面诊断 ${recording.contextCount} 个`);
+  }
+  if (Number(recording.recordedLayoutCount) > 0) {
+    parts.push(`逐动作布局 ${recording.recordedLayoutCount} 个`);
+  }
+  if (recording.integrityStatus) {
+    const integrityLabels = {
+      complete: '证据完整',
+      incomplete: '证据待补',
+      unusable: '证据不可用',
+    };
+    parts.push(
+      integrityLabels[recording.integrityStatus] || recording.integrityStatus,
+    );
+  }
+  for (const issue of recording.integrityIssues || []) {
+    if (!recording.qualityIssues?.includes(issue)) parts.push(issue);
+  }
+  if (Number(recording.replayStats?.attempts) > 0) {
+    const attempts = Number(recording.replayStats.attempts);
+    const passed = Number(recording.replayStats.passed);
+    const rate = Number.isFinite(recording.replayStats.successRate)
+      ? ` ${Math.round(recording.replayStats.successRate * 100)}%`
+      : '';
+    parts.push(`回归 ${passed}/${attempts}${rate}`);
+  }
+  if (Number(recording.replayRecoveryLog?.length) > 0) {
+    parts.push(`自动恢复 ${recording.replayRecoveryLog.length} 次`);
+  }
+  if (recording.validationSource === 'workflow_skill') {
+    const skillLabels = {
+      verified: '通过',
+      failed: '失败',
+      running: '进行中',
+      unverified: '待验证',
+      not_run: '未运行',
+    };
+    parts.push(
+      `Skill 验证 ${skillLabels[recording.skillValidationStatus] || recording.skillValidationStatus || '待验证'}`,
+    );
   }
   if (recording.correctionStatus === 'completed') {
     parts.push(`修正版 ${recording.correctedStepCount || 0} 步`);
@@ -911,13 +959,14 @@ function updateRecordingButtons(recording = null) {
     ['starting', 'recording', 'stopping', 'replaying'].includes(status) ||
     recording?.correctionStatus === 'repairing';
   const hasSteps = Number(recording?.stepCount ?? recording?.steps?.length ?? 0) > 0;
+  const replayAvailable = Boolean(recording?.replayAvailable) || hasSteps;
   elements.recordingApp.disabled = active;
   elements.recordingFeature.disabled = active || !elements.recordingApp.value;
   elements.startRecordingBtn.disabled =
     active || !elements.recordingApp.value || !elements.recordingFeature.value;
   elements.stopRecordingBtn.disabled = !['starting', 'recording'].includes(status);
   elements.repairRecordingBtn.disabled = active || !hasSteps;
-  elements.replayRecordingBtn.disabled = active || !hasSteps;
+  elements.replayRecordingBtn.disabled = active || !replayAvailable;
 }
 
 async function refreshCaptureConfig() {

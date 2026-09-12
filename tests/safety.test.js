@@ -20,6 +20,9 @@ test('allows app launch and real installed-app skills', () => {
     { intent: 'ai_chat', appName: '千问', language: 'en' },
     { intent: 'wechat_send_messages', appName: '微信', targetMode: 'first' },
     { intent: 'wechat_send_media', appName: '微信', targetMode: 'first', mediaIndex: 0 },
+    { intent: 'wechat_voip_call', appName: '微信', targetMode: 'first', callType: 'audio' },
+    { intent: 'tencent_quick_meeting', appName: '腾讯会议' },
+    { intent: 'tencent_join_meeting', appName: '腾讯会议', meetingId: '660-739-282' },
   ]) {
     assert.equal(evaluateSafety(parsed, `测试${parsed.appName}`).allowed, true, parsed.appName);
   }
@@ -39,6 +42,16 @@ test('rejects WeChat media targeting modes other than the first conversation', (
   const result = evaluateSafety(
     { intent: 'wechat_send_media', appName: '微信', targetMode: 'named' },
     '微信发视频',
+  );
+
+  assert.equal(result.allowed, false);
+  assert.match(result.reason, /第一个会话/);
+});
+
+test('rejects WeChat calls targeting anything other than the first conversation', () => {
+  const result = evaluateSafety(
+    { intent: 'wechat_voip_call', appName: '微信', targetMode: 'named', callType: 'video' },
+    '微信视频通话',
   );
 
   assert.equal(result.allowed, false);

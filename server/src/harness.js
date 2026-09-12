@@ -1,13 +1,56 @@
 import { randomUUID } from 'node:crypto';
+import { executeQqVoipCall } from './skills/qq-voip.js';
+import {
+  executeWelinkVoipCall,
+  WELINK_AUDIO_CALL_WORKFLOW_ID,
+  WELINK_VIDEO_CALL_WORKFLOW_ID,
+} from './skills/welink-voip.js';
+import { executeJdLiveBrowse } from './skills/jd-live.js';
+import { executeYangshipinLiveBrowse } from './skills/yangshipin-live.js';
+import {
+  executeXunleiUploadMedia,
+  XUNLEI_UPLOAD_MEDIA_WORKFLOW_ID,
+} from './skills/xunlei-upload.js';
+import {
+  DEFAULT_XUNLEI_MAGNET,
+  executeXunleiDownload,
+  XUNLEI_DOWNLOAD_WORKFLOW_ID,
+} from './skills/xunlei-download.js';
+import {
+  APP_STORE_DOWNLOAD_WORKFLOW_ID,
+  DEFAULT_APP_STORE_TARGET,
+  executeAppStoreDownload,
+} from './skills/app-store-download.js';
+import {
+  BAIDU_NETDISK_DOWNLOAD_WORKFLOW_ID,
+  executeBaiduNetdiskDownload,
+} from './skills/baidu-netdisk-download.js';
+import { BAIDU_NETDISK_UPLOAD_WORKFLOW_ID, executeBaiduNetdiskUpload } from './skills/baidu-netdisk-upload.js';
 
 import { findAppByName } from './app-registry.js';
 import { parseTaskWithCodexCli, parseTaskWithModel } from './llm.js';
 import { parseTaskFallback } from './task-parser.js';
 import { evaluateSafety } from './safety.js';
+import {
+  createDeviceProfile,
+  resolveProfiledPoint,
+} from './device-profile.js';
+import {
+  buildHarmonyHomePageSwipe,
+  findHarmonyHomeFolders,
+  findHarmonyHomeTarget,
+} from './harmony-home.js';
 import { buildAiChatPlan } from './skills/ai-chat.js';
+import { buildDeepseekChatPlan } from './skills/deepseek-chat.js';
 import { buildDoubaoChatPlan } from './skills/doubao-chat.js';
+import { buildQianwenChatPlan } from './skills/qianwen-chat.js';
+import { buildXiaoyiChatPlan } from './skills/xiaoyi-chat.js';
 import { buildLiveStreamPlan } from './skills/live-stream.js';
 import { buildShortVideoPlan } from './skills/short-video.js';
+import { executeDingtalkVoipCall } from './skills/dingtalk-voip.js';
+import { executeWecomVoipCall } from './skills/wecom-voip.js';
+import { executeFeishuQuickMeeting, executeFeishuJoinMeeting, FEISHU_QUICK_MEETING_WORKFLOW_ID, FEISHU_JOIN_MEETING_WORKFLOW_ID } from './skills/feishu-meeting.js';
+import { executeDingtalkQuickMeeting, executeDingtalkJoinMeeting, DINGTALK_QUICK_MEETING_WORKFLOW_ID, DINGTALK_JOIN_MEETING_WORKFLOW_ID } from './skills/dingtalk-meeting.js';
 import { buildAmapNavigationPlan } from './skills/amap-navigation.js';
 import { buildGenericMediaPlaybackPlan } from './skills/generic-media.js';
 import { buildLiveEntryPlan } from './skills/live-entry.js';
@@ -15,10 +58,53 @@ import { buildTencentVideoPlaybackPlan } from './skills/tencent-video.js';
 import { buildWechatChannelsPlan } from './skills/wechat-channels.js';
 import { buildWechatMessagesPlan } from './skills/wechat-messages.js';
 import {
+  durationParameterToMs as meetingDurationParameterToMs,
+  executeTencentJoinMeeting,
+  executeTencentQuickMeeting,
+  TENCENT_JOIN_MEETING_WORKFLOW_ID,
+  TENCENT_QUICK_MEETING_WORKFLOW_ID,
+} from './skills/tencent-meeting.js';
+import {
   executeWechatMediaTransfer,
   WECHAT_MEDIA_WORKFLOW_ID,
 } from './skills/wechat-media.js';
+import {
+  callTypeForWechatWorkflow,
+  executeWechatVoipCall,
+  isWechatVoipWorkflowId,
+} from './skills/wechat-voip.js';
+import {
+  executeKuaishouLiveBrowse,
+  KUAISHOU_LIVE_WORKFLOW_ID,
+} from './skills/kuaishou-live.js';
+import {
+  BILIBILI_LIVE_WORKFLOW_ID,
+  executeBilibiliLiveBrowse,
+} from './skills/bilibili-live.js';
+import {
+  executeHuyaLiveBrowse,
+  HUYA_LIVE_WORKFLOW_ID,
+} from './skills/huya-live.js';
+import {
+  DOUYU_LIVE_WORKFLOW_ID,
+  executeDouyuLiveBrowse,
+} from './skills/douyu-live.js';
+import {
+  executeIqiyiLiveBrowse,
+  IQIYI_LIVE_WORKFLOW_ID,
+} from './skills/iqiyi-live.js';
+import {
+  executeTaobaoLiveBrowse,
+  TAOBAO_LIVE_WORKFLOW_ID,
+} from './skills/taobao-live.js';
+import {
+  buildWeiboLiveManualPlan,
+  WEIBO_LIVE_WORKFLOW_ID,
+} from './skills/weibo-live.js';
+import { executeUiMessage } from './ui-message.js';
 import { findWorkflow } from './workflow-registry.js';
+
+const MIN_LIVE_SWITCH_INTERVAL_MS = 1000;
 
 export class TaskManager {
   constructor({
@@ -26,13 +112,45 @@ export class TaskManager {
     apps,
     captureManager = null,
     workflows = [],
+    workflowExecutionProvider = null,
+    tencentJoinMeetingExecutor = executeTencentJoinMeeting,
+    tencentQuickMeetingExecutor = executeTencentQuickMeeting,
     wechatMediaExecutor = executeWechatMediaTransfer,
+    wechatVoipExecutor = executeWechatVoipCall,
+    welinkVoipExecutor = executeWelinkVoipCall,
+    kuaishouLiveExecutor = executeKuaishouLiveBrowse,
+    bilibiliLiveExecutor = executeBilibiliLiveBrowse,
+    huyaLiveExecutor = executeHuyaLiveBrowse,
+    douyuLiveExecutor = executeDouyuLiveBrowse,
+    iqiyiLiveExecutor = executeIqiyiLiveBrowse,
+    taobaoLiveExecutor = executeTaobaoLiveBrowse,
+    xunleiUploadExecutor = executeXunleiUploadMedia,
+    xunleiDownloadExecutor = executeXunleiDownload,
+    appStoreDownloadExecutor = executeAppStoreDownload,
+    baiduNetdiskDownloadExecutor = executeBaiduNetdiskDownload,
+    baiduNetdiskUploadExecutor = executeBaiduNetdiskUpload,
   }) {
     this.adb = adb;
     this.apps = apps;
     this.captureManager = captureManager;
     this.workflows = workflows;
+    this.workflowExecutionProvider = workflowExecutionProvider;
+    this.tencentJoinMeetingExecutor = tencentJoinMeetingExecutor;
+    this.tencentQuickMeetingExecutor = tencentQuickMeetingExecutor;
     this.wechatMediaExecutor = wechatMediaExecutor;
+    this.wechatVoipExecutor = wechatVoipExecutor;
+    this.welinkVoipExecutor = welinkVoipExecutor;
+    this.kuaishouLiveExecutor = kuaishouLiveExecutor;
+    this.bilibiliLiveExecutor = bilibiliLiveExecutor;
+    this.huyaLiveExecutor = huyaLiveExecutor;
+    this.douyuLiveExecutor = douyuLiveExecutor;
+    this.iqiyiLiveExecutor = iqiyiLiveExecutor;
+    this.taobaoLiveExecutor = taobaoLiveExecutor;
+    this.xunleiUploadExecutor = xunleiUploadExecutor;
+    this.xunleiDownloadExecutor = xunleiDownloadExecutor;
+    this.appStoreDownloadExecutor = appStoreDownloadExecutor;
+    this.baiduNetdiskDownloadExecutor = baiduNetdiskDownloadExecutor;
+    this.baiduNetdiskUploadExecutor = baiduNetdiskUploadExecutor;
     this.tasks = new Map();
   }
 
@@ -55,6 +173,7 @@ export class TaskManager {
       workflowName: workflow?.featureName || null,
       parameterSchema: workflow?.params || [],
       parameters: sanitizeTaskParameters(workflow?.params || [], parameters),
+      executionParameters: { ...parameters },
       status: 'running',
       stepIndex: 0,
       totalSteps: 0,
@@ -91,7 +210,7 @@ export class TaskManager {
       parameterSchema: task.parameterSchema,
       parameters: task.parameters,
       status: task.status,
-      parsed: task.parsed,
+      parsed: sanitizeParsedTask(task.parsed),
       stepIndex: task.stepIndex,
       totalSteps: task.totalSteps,
       logs: task.logs.slice(-200),
@@ -101,6 +220,8 @@ export class TaskManager {
       captureError: task.captureError,
       sentCount: task.sentCount,
       effectiveDurationMs: task.effectiveDurationMs,
+      validationMode: task.validationMode,
+      validationChecks: task.validationChecks,
       deviceSession: task.deviceSession,
       startedAt: task.startedAt,
       finishedAt: task.finishedAt,
@@ -136,10 +257,10 @@ export class TaskManager {
       await this.#parse(task.input, { apiKey, useModel, parseMode }),
       {
         workflowId: task.workflowId,
-        parameters: task.parameters,
+        parameters: task.executionParameters,
       },
     );
-    this.#log(task, `解析结果: ${JSON.stringify(task.parsed)}`);
+    this.#log(task, `解析结果: ${JSON.stringify(sanitizeParsedTask(task.parsed))}`);
 
     const safety = evaluateSafety(task.parsed, task.input);
     if (!safety.allowed) {
@@ -283,6 +404,34 @@ export class TaskManager {
         return this.#wechatMessages(task);
       case 'wechat_send_media':
         return this.#wechatMedia(task);
+      case 'xunlei_upload_media':
+        return this.#xunleiUpload(task);
+      case 'xunlei_download':
+        return this.#xunleiDownload(task);
+      case 'app_store_download':
+        return this.#appStoreDownload(task);
+      case 'baidu_netdisk_download':
+        return this.#baiduNetdiskDownload(task);
+      case 'baidu_netdisk_upload':
+        return this.#baiduNetdiskUpload(task);
+      case 'wechat_voip_call':
+      case 'qq_voip_call':
+        return this.#wechatVoip(task);
+      case 'welink_voip_call':
+        return this.#welinkVoip(task);
+      case 'dingtalk_voip_call':
+      case 'wecom_voip_call':
+        return this.#enterpriseVoip(task);
+      case 'tencent_quick_meeting':
+        return this.#tencentQuickMeeting(task);
+      case 'dingtalk_quick_meeting':
+      case 'dingtalk_join_meeting':
+        return this.#dingtalkQuickMeeting(task);
+      case 'feishu_quick_meeting':
+      case 'feishu_join_meeting':
+        return this.#feishuQuickMeeting(task);
+      case 'tencent_join_meeting':
+        return this.#tencentJoinMeeting(task);
       case 'ai_chat':
         return this.#aiChat(task);
       case 'doubao_chat':
@@ -305,7 +454,7 @@ export class TaskManager {
 
   async #watchFeed(task) {
     const app = this.#resolveApp(task.parsed.appName);
-    if (app.skill !== 'short_video_feed') {
+    if (app.skill !== 'short_video_feed' && app.id !== 'bilibili') {
       throw new Error(`${app.name} 暂未实现可自动浏览的 skill`);
     }
 
@@ -402,7 +551,7 @@ export class TaskManager {
 
   async #wechatChannels(task) {
     const app = this.#resolveApp(task.parsed.appName);
-    if (app.id !== 'wechat') {
+    if (!['wechat', 'qq'].includes(app.id) || (task.parsed.intent === 'qq_voip_call') !== (app.id === 'qq')) {
       throw new Error('wechat_channels_feed 只能用于微信 App');
     }
     const screen = await this.adb.getScreenSize().catch(() => null);
@@ -470,8 +619,532 @@ export class TaskManager {
     task.effectiveDurationMs = result.effectiveDurationMs ?? null;
   }
 
+  async #wechatVoip(task) {
+    const app = this.#resolveApp(task.parsed.appName || '微信');
+    if (app.id !== 'wechat') {
+      throw new Error('wechat_voip_call 只能用于微信 App');
+    }
+    if (task.parsed.targetMode && task.parsed.targetMode !== 'first') {
+      throw new Error('微信音视频通话当前只支持聊天列表中的第一个会话');
+    }
+
+    const executor = app.id === 'qq' ? executeQqVoipCall : this.wechatVoipExecutor;
+    const result = await executor({
+      device: this.adb,
+      app,
+      workflowId: task.workflowId,
+      callType: task.parsed.callType,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, totalSteps) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = totalSteps;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+  }
+
+  async #welinkVoip(task) {
+    const app = this.#resolveApp(task.parsed.appName || 'welink');
+    if (app.id !== 'welink') throw new Error('welink_voip_call 只适用于 WeLink');
+    const result = await this.welinkVoipExecutor({
+      device: this.adb,
+      app,
+      callType: task.parsed.callType,
+      camera: task.parsed.camera,
+      shareScreen: task.parsed.shareScreen,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (index, label, total) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = index;
+        task.totalSteps = total;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+  }
+
+  async #xunleiUpload(task) {
+    const app = this.#resolveApp(task.parsed.appName || '迅雷');
+    if (app.id !== 'xunlei') {
+      throw new Error('xunlei_upload_media 只适用于迅雷 App');
+    }
+    const result = await this.xunleiUploadExecutor({
+      device: this.adb,
+      app,
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, totalSteps) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = totalSteps;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.stepIndex = result.replayStepIndex || task.stepIndex;
+  }
+
+  async #xunleiDownload(task) {
+    const app = this.#resolveApp(task.parsed.appName || '迅雷');
+    if (app.id !== 'xunlei') {
+      throw new Error('xunlei_download 只适用于迅雷 App');
+    }
+    const result = await this.xunleiDownloadExecutor({
+      device: this.adb,
+      app,
+      magnetUrl: task.parsed.magnetUrl || DEFAULT_XUNLEI_MAGNET,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, totalSteps) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = totalSteps;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+    task.stepIndex = result.replayStepIndex || task.stepIndex;
+  }
+
+  async #appStoreDownload(task) {
+    const store = this.#resolveApp(task.parsed.appName || '应用市场');
+    if (store.id !== 'app-store') {
+      throw new Error('app_store_download 只适用于应用市场');
+    }
+    const targetApp = this.#resolveApp(task.parsed.targetApp || DEFAULT_APP_STORE_TARGET);
+    if (!targetApp) throw new Error(`未找到目标应用 ${task.parsed.targetApp || DEFAULT_APP_STORE_TARGET}`);
+    const result = await this.appStoreDownloadExecutor({
+      device: this.adb,
+      app: store,
+      targetApp,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, total) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = total;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+    task.stepIndex = result.replayStepIndex || task.stepIndex;
+  }
+
+  async #baiduNetdiskDownload(task) {
+    const app = this.#resolveApp(task.parsed.appName || '百度网盘');
+    if (app.id !== 'baidu-netdisk') {
+      throw new Error('baidu_netdisk_download 只适用于百度网盘');
+    }
+    const result = await this.baiduNetdiskDownloadExecutor({
+      device: this.adb,
+      app,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, total) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = total;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+    task.stepIndex = result.replayStepIndex || task.stepIndex;
+  }
+
+  async #baiduNetdiskUpload(task) {
+    const app = this.#resolveApp(task.parsed.appName || '百度网盘');
+    const result = await this.baiduNetdiskUploadExecutor({ device: this.adb, app, mediaType: task.parsed.mediaType, sleep: ms => this.#sleep(ms, task), onStep: (i, label, total) => { this.#assertNotStopped(task); task.stepIndex=i; task.totalSteps=total; this.#log(task,label); } });
+    task.validationMode = result.validationMode; task.validationChecks = result.validationChecks || []; task.stepIndex = result.replayStepIndex || task.stepIndex;
+  }
+
+  async #tencentQuickMeeting(task) {
+    return this.#tencentMeeting(task, {
+      executor: this.tencentQuickMeetingExecutor,
+      sourceWorkflowId: TENCENT_QUICK_MEETING_WORKFLOW_ID,
+      workflowLabel: '快速会议',
+    });
+  }
+
+  async #dingtalkQuickMeeting(task) {
+    const executor = task.parsed.intent === 'dingtalk_join_meeting' ? executeDingtalkJoinMeeting : executeDingtalkQuickMeeting;
+    const result = await executor({
+      device: this.adb, app: this.#resolveApp(task.parsed.appName),
+      meetingId: task.parsed.meetingId,
+      meetingType: task.parsed.meetingType, camera: task.parsed.camera,
+      shareScreen: task.parsed.shareScreen, durationMs: task.parsed.durationMs,
+      sleep: ms => this.#sleep(ms, task),
+      startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+      onStep: (index, label) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = index;
+        task.totalSteps = 5;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks;
+    task.effectiveDurationMs = result.effectiveDurationMs;
+  }
+
+  async #enterpriseVoip(task) {
+    const executor = task.parsed.intent === 'wecom_voip_call' ? executeWecomVoipCall : executeDingtalkVoipCall;
+    const result = await executor({
+      device: this.adb, app: this.#resolveApp(task.parsed.appName),
+      callType: task.parsed.callType, durationMs: task.parsed.durationMs,
+      camera: task.parsed.camera, shareScreen: task.parsed.shareScreen,
+      sleep: ms => this.#sleep(ms, task),
+      startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+      onStep: (index, label) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = index;
+        task.totalSteps = 5;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks;
+    task.effectiveDurationMs = result.effectiveDurationMs;
+  }
+
+  async #feishuQuickMeeting(task) {
+    const executor = task.parsed.intent === 'feishu_join_meeting' ? executeFeishuJoinMeeting : executeFeishuQuickMeeting;
+    const result = await executor({
+      device: this.adb, app: this.#resolveApp(task.parsed.appName),
+      meetingId: task.parsed.meetingId,
+      durationMs: task.parsed.durationMs, camera: task.parsed.camera, shareScreen: task.parsed.shareScreen,
+      sleep: ms => this.#sleep(ms, task),
+      startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+      onStep: (index, label) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = index;
+        task.totalSteps = 5;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks;
+    task.effectiveDurationMs = result.effectiveDurationMs;
+  }
+
+  async #tencentJoinMeeting(task) {
+    return this.#tencentMeeting(task, {
+      executor: this.tencentJoinMeetingExecutor,
+      sourceWorkflowId: TENCENT_QUICK_MEETING_WORKFLOW_ID,
+      workflowLabel: '加入会议',
+    });
+  }
+
+  async #tencentMeeting(
+    task,
+    { executor, sourceWorkflowId, workflowLabel },
+  ) {
+    const app = this.#resolveApp(task.parsed.appName || '腾讯会议');
+    if (app.id !== 'tencent-meeting') {
+      throw new Error(`${task.parsed.intent} 只能用于腾讯会议 App`);
+    }
+    if (
+      task.parsed.shareScreen &&
+      typeof this.workflowExecutionProvider !== 'function'
+    ) {
+      throw new Error('腾讯会议快捷任务尚未配置已验证录制资料');
+    }
+
+    const execution =
+      typeof this.workflowExecutionProvider === 'function'
+        ? await this.workflowExecutionProvider(sourceWorkflowId)
+        : null;
+    if (
+      task.parsed.shareScreen &&
+      (!execution || execution.validationStatus !== 'verified')
+    ) {
+      throw new Error(
+        `腾讯会议${workflowLabel}缺少已验证共享屏幕录制，请先完成快速会议动作回放验证`,
+      );
+    }
+
+    const recordedSteps = Array.isArray(execution?.steps)
+      ? execution.steps
+      : [];
+    const sourceProfile =
+      execution?.recordingProfile ||
+      createDeviceProfile({
+        status: { provider: 'hdc' },
+        screen: execution?.screen,
+      });
+    task.totalSteps = task.parsed.shareScreen ? recordedSteps.length : 0;
+    const meetingParameters = {
+      duration:
+        task.executionParameters.duration ||
+        { amount: task.parsed.durationMs, unit: '毫秒' },
+      camera: task.parsed.camera,
+      shareScreen: task.parsed.shareScreen,
+    };
+    if (task.parsed.intent === 'tencent_join_meeting') {
+      meetingParameters.meetingId = task.parsed.meetingId;
+      meetingParameters.meetingPassword = task.parsed.meetingPassword;
+    }
+
+    const result = await executor({
+      device: this.adb,
+      app,
+      parameters: meetingParameters,
+      recordedSteps,
+      sourceScreen: execution?.screen,
+      executeStep: async (step, { targetScreen } = {}) => {
+        this.#assertNotStopped(task);
+        const currentScreen =
+          targetScreen ||
+          task.deviceSession?.screen ||
+          (await this.adb.getScreenSize().catch(() => null));
+        const targetProfile = createDeviceProfile({
+          status: task.deviceSession || {},
+          screen: currentScreen,
+        });
+        const point = resolveProfiledPoint(step, sourceProfile, targetProfile);
+        if (step.type === 'tap') {
+          await this.adb.tap(point);
+          return;
+        }
+        if (step.type === 'long_press') {
+          if (typeof this.adb.longPress !== 'function') {
+            throw new Error('当前设备适配器不支持腾讯会议共享动作中的长按');
+          }
+          await this.adb.longPress({
+            ...point,
+            durationMs: step.durationMs,
+          });
+          return;
+        }
+        throw new Error(`腾讯会议录制包含不支持的动作类型: ${step.type}`);
+      },
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        this.#log(
+          task,
+          `执行会议共享动作 ${stepIndex}/${Math.max(recordedSteps.length, stepIndex)}`,
+        );
+      },
+      onStatus: (message) => {
+        this.#assertNotStopped(task);
+        this.#log(task, message);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+    task.stepIndex = result.replayStepIndex || task.stepIndex;
+  }
+
   async #liveEntry(task) {
     const app = this.#resolveApp(task.parsed.appName);
+    if (app.id === 'jd' || app.id === 'yangshipin') {
+      const executor = app.id === 'jd' ? executeJdLiveBrowse : executeYangshipinLiveBrowse;
+      const result = await executor({
+        device: this.adb, app, durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        sleep: (ms) => this.#sleep(ms, task),
+        startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+        onStep: (index, label, total) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = index;
+          task.totalSteps = total;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks;
+      task.effectiveDurationMs = result.effectiveDurationMs;
+      return;
+    }
+    if (task.workflowId === TAOBAO_LIVE_WORKFLOW_ID || app.id === 'taobao') {
+      const result = await this.taobaoLiveExecutor({
+        device: this.adb,
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        startCapture: task.captureConfig?.enabled
+          ? () => this.#ensureCapture(task)
+          : null,
+        sleep: (ms) => this.#sleep(ms, task),
+        onStep: (stepIndex, label, totalSteps) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = stepIndex;
+          task.totalSteps = totalSteps;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks || [];
+      task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+      task.stepIndex = result.replayStepIndex || task.stepIndex;
+      return;
+    }
+
+    if (task.workflowId === IQIYI_LIVE_WORKFLOW_ID || app.id === 'iqiyi') {
+      const result = await this.iqiyiLiveExecutor({
+        device: this.adb,
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        startCapture: task.captureConfig?.enabled
+          ? () => this.#ensureCapture(task)
+          : null,
+        sleep: (ms) => this.#sleep(ms, task),
+        onStep: (stepIndex, label, totalSteps) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = stepIndex;
+          task.totalSteps = totalSteps;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks || [];
+      task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+      task.stepIndex = result.replayStepIndex || task.stepIndex;
+      return;
+    }
+
+    if (task.workflowId === WEIBO_LIVE_WORKFLOW_ID || app.id === 'weibo') {
+      const screen = await this.adb.getScreenSize().catch(() => null);
+      const steps = buildWeiboLiveManualPlan({
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        screen: screen || undefined,
+      });
+      await this.#runSteps(task, steps);
+      return;
+    }
+
+    if (task.workflowId === DOUYU_LIVE_WORKFLOW_ID || app.id === 'douyu') {
+      const result = await this.douyuLiveExecutor({
+        device: this.adb,
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        startCapture: task.captureConfig?.enabled
+          ? () => this.#ensureCapture(task)
+          : null,
+        sleep: (ms) => this.#sleep(ms, task),
+        onStep: (stepIndex, label, totalSteps) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = stepIndex;
+          task.totalSteps = totalSteps;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks || [];
+      task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+      task.stepIndex = result.replayStepIndex || task.stepIndex;
+      return;
+    }
+
+    if (task.workflowId === HUYA_LIVE_WORKFLOW_ID || app.id === 'huya') {
+      const result = await this.huyaLiveExecutor({
+        device: this.adb,
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        startCapture: task.captureConfig?.enabled
+          ? () => this.#ensureCapture(task)
+          : null,
+        sleep: (ms) => this.#sleep(ms, task),
+        onStep: (stepIndex, label, totalSteps) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = stepIndex;
+          task.totalSteps = totalSteps;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks || [];
+      task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+      task.stepIndex = result.replayStepIndex || task.stepIndex;
+      return;
+    }
+
+    if (task.workflowId === BILIBILI_LIVE_WORKFLOW_ID || app.id === 'bilibili') {
+      const result = await this.bilibiliLiveExecutor({
+        device: this.adb,
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        startCapture: task.captureConfig?.enabled
+          ? () => this.#ensureCapture(task)
+          : null,
+        sleep: (ms) => this.#sleep(ms, task),
+        onStep: (stepIndex, label, totalSteps) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = stepIndex;
+          task.totalSteps = totalSteps;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks || [];
+      task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+      task.stepIndex = result.replayStepIndex || task.stepIndex;
+      return;
+    }
+
+    if (task.workflowId === KUAISHOU_LIVE_WORKFLOW_ID || app.id === 'kuaishou') {
+      const result = await this.kuaishouLiveExecutor({
+        device: this.adb,
+        app,
+        durationMs: task.parsed.durationMs,
+        switchIntervalMs: task.parsed.switchIntervalMs,
+        startCapture: task.captureConfig?.enabled
+          ? () => this.#ensureCapture(task)
+          : null,
+        sleep: (ms) => this.#sleep(ms, task),
+        onStep: (stepIndex, label, totalSteps) => {
+          this.#assertNotStopped(task);
+          task.stepIndex = stepIndex;
+          task.totalSteps = totalSteps;
+          this.#log(task, label);
+        },
+      });
+      task.validationMode = result.validationMode;
+      task.validationChecks = result.validationChecks || [];
+      task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+      task.stepIndex = result.replayStepIndex || task.stepIndex;
+      return;
+    }
+
     const screen = await this.adb.getScreenSize().catch(() => null);
     const steps = buildLiveEntryPlan({
       app,
@@ -485,14 +1158,34 @@ export class TaskManager {
 
   async #aiChat(task) {
     const app = this.#resolveApp(task.parsed.appName);
-    const screen = await this.adb.getScreenSize().catch(() => null);
-    const steps = buildAiChatPlan({
+    const deviceStatus = await this.adb.getDeviceStatus?.().catch(() => null);
+    const screen = deviceStatus?.screen || (await this.adb.getScreenSize().catch(() => null));
+    const planOptions = {
       app,
       durationMs: task.parsed.durationMs,
       intervalMs: task.parsed.intervalMs,
       messages: task.parsed.messages,
       screen: screen || undefined,
-    });
+    };
+    let steps;
+    if (app.skill === 'xiaoyi_chat') {
+      steps = buildXiaoyiChatPlan({
+        ...planOptions,
+        platform: deviceStatus?.platform,
+      });
+    } else if (app.skill === 'deepseek_chat') {
+      steps = buildDeepseekChatPlan({
+        ...planOptions,
+        platform: deviceStatus?.platform,
+      });
+    } else if (app.skill === 'qianwen_chat') {
+      steps = buildQianwenChatPlan({
+        ...planOptions,
+        platform: deviceStatus?.platform,
+      });
+    } else {
+      steps = buildAiChatPlan(planOptions);
+    }
 
     await this.#runSteps(task, steps);
   }
@@ -535,6 +1228,9 @@ export class TaskManager {
         return;
       case 'keyevent':
         await this.adb.keyevent(step.code);
+        return;
+      case 'open_home_app':
+        await this.#openHomeApp(step, task);
         return;
       case 'wait':
         await this.#sleep(step.ms, task);
@@ -589,7 +1285,11 @@ export class TaskManager {
         await this.#assertMediaPlaying(step);
         return;
       case 'assert_ui_text':
-        await this.#assertUiText(step);
+        if (step.retries || step.retryIntervalMs) {
+          await this.#waitForUiText(step, task);
+        } else {
+          await this.#assertUiText(step);
+        }
         return;
       case 'assert_ui_node':
         await this.#assertUiNode(step);
@@ -629,6 +1329,27 @@ export class TaskManager {
         await this.adb.inputKeyText(step.text, {
           clearExisting: Boolean(step.clearExisting),
           clearCharacters: step.clearCharacters,
+        });
+        return;
+      case 'send_ui_message':
+        await executeUiMessage({
+          device: this.adb,
+          message: step.text,
+          inputResourceId: step.inputResourceId,
+          sendResourceId: step.sendResourceId,
+          attempts: step.attempts,
+          readyChecks: step.readyChecks,
+          confirmationChecks: step.confirmationChecks,
+          pollMs: step.pollMs,
+          focusWaitMs: step.focusWaitMs,
+          confirmOnEditorClear: Boolean(step.confirmOnEditorClear),
+          sleep: (ms) => this.#sleep(ms, task),
+          onRetry: ({ nextAttempt, reason }) => {
+            this.#log(
+              task,
+              `Retrying message send (${nextAttempt}/${step.attempts || 3}): ${reason}`,
+            );
+          },
         });
         return;
       case 'loop_text_messages':
@@ -709,6 +1430,95 @@ export class TaskManager {
     throw new Error(step.message || `屏幕未进入目标方向，当前方向 ${orientation?.raw || 'unknown'}`);
   }
 
+  async #openHomeApp(step, task) {
+    if (
+      typeof this.adb.getUiTextSnapshot !== 'function' ||
+      typeof this.adb.tap !== 'function' ||
+      typeof this.adb.swipe !== 'function'
+    ) {
+      throw new Error('当前设备适配器不支持动态桌面应用查找');
+    }
+
+    const screen =
+      task.deviceSession?.screen ||
+      (await this.adb.getScreenSize().catch(() => null));
+    if (!screen?.width || !screen?.height) {
+      throw new Error('无法获取屏幕尺寸，不能遍历鸿蒙桌面');
+    }
+
+    const maxPages = Math.max(1, Math.min(12, Number(step.maxPages) || 8));
+    const settleMs = Math.max(250, Number(step.settleMs) || 500);
+    const target = {
+      resourceId: step.resourceId,
+      texts: step.texts || step.text,
+    };
+    const successIds = Array.isArray(step.successIds)
+      ? step.successIds.filter(Boolean)
+      : [];
+
+    const activateTarget = async (node) => {
+      await this.adb.tap({ x: node.centerX, y: node.centerY });
+      if (!successIds.length) return;
+
+      await this.#sleep(Math.max(500, Number(step.activationCheckMs) || 1000), task);
+      const snapshot = await this.adb.getUiTextSnapshot();
+      const reachedTarget = successIds.some((resourceId) =>
+        findHarmonyHomeTarget(snapshot.layout, { resourceId }),
+      );
+      if (reachedTarget) return;
+
+      const retryNode = findHarmonyHomeTarget(snapshot.layout, target);
+      if (retryNode) {
+        await this.adb.tap({ x: retryNode.centerX, y: retryNode.centerY });
+      }
+    };
+
+    const tryCurrentPage = async () => {
+      this.#assertNotStopped(task);
+      const snapshot = await this.adb.getUiTextSnapshot();
+      let node = findHarmonyHomeTarget(snapshot.layout, target);
+      if (node) {
+        await activateTarget(node);
+        return true;
+      }
+
+      for (const folder of findHarmonyHomeFolders(snapshot.layout)) {
+        this.#assertNotStopped(task);
+        await this.adb.tap({ x: folder.centerX, y: folder.centerY });
+        await this.#sleep(settleMs, task);
+
+        const folderSnapshot = await this.adb.getUiTextSnapshot();
+        node = findHarmonyHomeTarget(folderSnapshot.layout, target);
+        if (node) {
+          await activateTarget(node);
+          return true;
+        }
+
+        await this.adb.keyevent('KEYCODE_BACK');
+        await this.#sleep(300, task);
+      }
+      return false;
+    };
+
+    if (await tryCurrentPage()) return;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      await this.adb.swipe(buildHarmonyHomePageSwipe(screen, 'left'));
+      await this.#sleep(settleMs, task);
+      if (await tryCurrentPage()) return;
+    }
+
+    for (let page = 0; page < maxPages; page += 1) {
+      await this.adb.swipe(buildHarmonyHomePageSwipe(screen, 'right'));
+      await this.#sleep(settleMs, task);
+      if (await tryCurrentPage()) return;
+    }
+
+    throw new Error(
+      `遍历鸿蒙桌面后仍未找到应用资源: ${step.resourceId || step.texts || step.text}`,
+    );
+  }
+
   async #assertUiText(step) {
     let snapshot = null;
     try {
@@ -733,6 +1543,34 @@ export class TaskManager {
       if (step.optional) return;
       throw new Error(step.message || `屏幕出现了不应出现的内容: ${this.#describeMatchers(step.none)}`);
     }
+  }
+
+  async #waitForUiText(step, task) {
+    const retries = Math.max(1, Math.min(30, Number(step.retries) || 1));
+    const intervalMs = Math.max(100, Number(step.retryIntervalMs) || 500);
+    let lastError = null;
+
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      try {
+        const snapshot = await this.adb.getUiTextSnapshot();
+        const text = snapshot.text || '';
+        const matches =
+          (!step.any || this.#matchesAny(text, step.any)) &&
+          (!step.all || this.#matchesAll(text, step.all)) &&
+          (!step.none || !this.#matchesAny(text, step.none));
+        if (matches) return;
+        lastError = new Error(
+          step.message || `屏幕未出现预期内容 ${this.#describeMatchers(step.any || step.all || step.none)}`,
+        );
+      } catch (error) {
+        lastError = error;
+      }
+
+      if (attempt < retries - 1) await this.#sleep(intervalMs, task);
+    }
+
+    if (step.optional) return;
+    throw lastError || new Error(step.message || '屏幕未出现预期内容');
   }
 
   async #assertUiNode(step) {
@@ -940,6 +1778,7 @@ export class TaskManager {
   async #manualConfirm(step, task) {
     task.pendingConfirmation = {
       message: step.message || step.label || '请在手机上完成手动操作后点击继续。',
+      confirmLabel: step.confirmLabel || '确认完成，继续',
       createdAt: new Date().toISOString(),
       confirmed: false,
     };
@@ -1027,6 +1866,27 @@ export function inferBusinessName(parsed = {}) {
     case 'wechat_send_messages':
     case 'wechat_send_media':
       return '传输';
+    case 'xunlei_upload_media':
+      return '上传下载';
+    case 'xunlei_download':
+      return '上传下载';
+    case 'app_store_download':
+      return '上传下载';
+    case 'baidu_netdisk_download':
+      return '上传下载';
+    case 'wechat_voip_call':
+    case 'qq_voip_call':
+    case 'dingtalk_voip_call':
+    case 'wecom_voip_call':
+    case 'welink_voip_call':
+      return 'VoIP';
+    case 'tencent_quick_meeting':
+    case 'tencent_join_meeting':
+    case 'dingtalk_quick_meeting':
+    case 'dingtalk_join_meeting':
+    case 'feishu_quick_meeting':
+    case 'feishu_join_meeting':
+      return '会议';
     case 'watch_live':
     case 'live_entry':
       return '直播';
@@ -1054,10 +1914,168 @@ function sanitizeTaskParameters(schema, values) {
   return result;
 }
 
+function sanitizeParsedTask(parsed) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  return {
+    ...parsed,
+    ...(parsed.meetingPassword
+      ? { meetingPassword: '[已隐藏]' }
+      : {}),
+      };
+}
+
 export function applyWorkflowParameters(
   parsed,
   { workflowId = null, parameters = {} } = {},
 ) {
+  if (workflowId === XUNLEI_UPLOAD_MEDIA_WORKFLOW_ID) {
+    return {
+      ...parsed,
+      intent: 'xunlei_upload_media',
+      appName: '迅雷',
+    };
+  }
+  if (workflowId === XUNLEI_DOWNLOAD_WORKFLOW_ID) {
+    return {
+      ...parsed,
+      intent: 'xunlei_download',
+      appName: '迅雷',
+      magnetUrl: String(parameters.magnetUrl || parsed?.magnetUrl || DEFAULT_XUNLEI_MAGNET).trim(),
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+    };
+  }
+  if (workflowId === APP_STORE_DOWNLOAD_WORKFLOW_ID) {
+    return {
+      ...parsed,
+      intent: 'app_store_download',
+      appName: '应用市场',
+      targetApp: String(parameters.targetApp || parsed?.targetApp || DEFAULT_APP_STORE_TARGET).trim(),
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+    };
+  }
+  if (workflowId === BAIDU_NETDISK_DOWNLOAD_WORKFLOW_ID) {
+    return {
+      ...parsed,
+      intent: 'baidu_netdisk_download',
+      appName: '百度网盘',
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+    };
+  }
+  if (workflowId === BAIDU_NETDISK_UPLOAD_WORKFLOW_ID) {
+    return { ...parsed, intent: 'baidu_netdisk_upload', appName: '百度网盘', mediaType: parameters.mediaType || 'image' };
+  }
+  if ([WELINK_AUDIO_CALL_WORKFLOW_ID, WELINK_VIDEO_CALL_WORKFLOW_ID].includes(workflowId)) {
+    return {
+      ...parsed,
+      intent: 'welink_voip_call',
+      appName: 'welink',
+      targetMode: 'first',
+      callType: workflowId === WELINK_VIDEO_CALL_WORKFLOW_ID ? 'video' : 'audio',
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+      camera: Boolean(parameters.camera ?? parsed?.camera),
+      shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen),
+    };
+  }
+  if (['voip:dingtalk:audio-call', 'voip:dingtalk:video-call', 'voip:wecom:audio-call', 'voip:wecom:video-call'].includes(workflowId)) {
+    const video = workflowId.endsWith(':video-call');
+    const wecom = workflowId.startsWith('voip:wecom:');
+    return { ...parsed, intent: wecom ? 'wecom_voip_call' : 'dingtalk_voip_call', appName: wecom ? '企业微信' : '钉钉', targetMode: 'first',
+      callType: video ? 'video' : 'audio', durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+      camera: video && Boolean(parameters.camera ?? parsed?.camera),
+      shareScreen: video && Boolean(parameters.shareScreen ?? parsed?.shareScreen) };
+  }
+  if (workflowId === DINGTALK_QUICK_MEETING_WORKFLOW_ID) {
+    const meetingType = parameters.meetingType ?? parsed?.meetingType ?? 'video';
+    return { ...parsed, intent: 'dingtalk_quick_meeting', appName: '钉钉', meetingType,
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+      camera: meetingType === 'video' && Boolean(parameters.camera ?? parsed?.camera),
+      shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen) };
+  }
+  if ([FEISHU_QUICK_MEETING_WORKFLOW_ID, FEISHU_JOIN_MEETING_WORKFLOW_ID].includes(workflowId)) {
+    return { ...parsed, intent: workflowId === FEISHU_JOIN_MEETING_WORKFLOW_ID ? 'feishu_join_meeting' : 'feishu_quick_meeting', appName: '飞书',
+      meetingId: String(parameters.meetingId ?? parsed?.meetingId ?? '').replace(/[\s-]/g, ''),
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+      camera: Boolean(parameters.camera ?? parsed?.camera), shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen) };
+  }
+  if (workflowId === DINGTALK_JOIN_MEETING_WORKFLOW_ID) {
+    return { ...parsed, intent: 'dingtalk_join_meeting', appName: '钉钉', meetingType: 'video',
+      meetingId: String(parameters.meetingId ?? parsed?.meetingId ?? '').replace(/[\s-]/g, ''),
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
+      camera: Boolean(parameters.camera ?? parsed?.camera),
+      shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen) };
+  }
+  if (workflowId === 'short-video:bilibili:short-video-feed') {
+    return { ...parsed, intent: 'watch_feed', appName: 'B站',
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 300000) };
+  }
+  if (workflowId === TENCENT_QUICK_MEETING_WORKFLOW_ID) {
+    const { reason: _unsupportedReason, ...parsedTask } = parsed || {};
+    return {
+      ...parsedTask,
+      intent: 'tencent_quick_meeting',
+      appName: '腾讯会议',
+      durationMs: meetingDurationParameterToMs(parameters.duration, {
+        defaultMs: parsed?.durationMs ?? 30 * 1000,
+      }),
+      camera: Boolean(parameters.camera ?? parsed?.camera),
+      shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen),
+    };
+  }
+  if (workflowId === TENCENT_JOIN_MEETING_WORKFLOW_ID) {
+    const { reason: _unsupportedReason, ...parsedTask } = parsed || {};
+    return {
+      ...parsedTask,
+      intent: 'tencent_join_meeting',
+      appName: '腾讯会议',
+      meetingId: String(parameters.meetingId ?? parsed?.meetingId ?? '').trim(),
+      meetingPassword:
+        String(
+          parameters.meetingPassword ?? parsed?.meetingPassword ?? '',
+        ).trim() || null,
+      durationMs: meetingDurationParameterToMs(parameters.duration, {
+        defaultMs: parsed?.durationMs ?? 30 * 1000,
+      }),
+      camera: Boolean(parameters.camera ?? parsed?.camera),
+      shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen),
+    };
+  }
+  if (['voip:qq:audio-call', 'voip:qq:video-call'].includes(workflowId)) {
+    return { ...parsed, intent: 'qq_voip_call', appName: 'QQ', targetMode: 'first',
+      callType: workflowId.endsWith(':video-call') ? 'video' : 'audio',
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000) };
+  }
+  if (isWechatVoipWorkflowId(workflowId)) {
+    return {
+      ...parsed,
+      intent: 'wechat_voip_call',
+      appName: '微信',
+      targetMode: 'first',
+      callType: callTypeForWechatWorkflow(workflowId),
+      durationMs: durationParameterToMs(
+        parameters.duration,
+        parsed?.durationMs ?? 30 * 1000,
+      ),
+    };
+  }
+  if (String(workflowId || '').startsWith('live:')) {
+    const configuredSwitchIntervalMs = parameters.switchInterval
+      ? durationParameterToMs(
+          parameters.switchInterval,
+          parsed?.switchIntervalMs ?? 3 * 60 * 1000,
+        )
+      : parsed?.switchIntervalMs ?? null;
+    return {
+      ...parsed,
+      durationMs: durationParameterToMs(
+        parameters.duration,
+        parsed?.durationMs ?? 10 * 60 * 1000,
+      ),
+      switchIntervalMs:
+        configuredSwitchIntervalMs === null
+          ? null
+          : Math.max(MIN_LIVE_SWITCH_INTERVAL_MS, configuredSwitchIntervalMs),
+    };
+  }
   if (workflowId !== WECHAT_MEDIA_WORKFLOW_ID) return parsed;
 
   const requestedMode = parameters.sendMode ?? parsed?.sendMode;

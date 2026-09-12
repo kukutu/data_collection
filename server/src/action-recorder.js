@@ -3,6 +3,23 @@ import { appendFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/pro
 import { dirname, join, resolve } from 'node:path';
 
 import { config } from './config.js';
+import {
+  createDeviceProfile,
+  resolveNormalizedRegion,
+  resolveProfiledPoint,
+  resolveProfiledSwipe,
+  selectDeviceProfile,
+  upsertDeviceBaseline,
+} from './device-profile.js';
+import { waitForRecordingReady } from './recording-process.js';
+import {
+  assessEvidenceIntegrity,
+  buildEvidenceManifest,
+  buildSemanticTrajectory,
+  enrichRecordedSteps,
+  executeStateStep,
+  isActionStep,
+} from './recording-semantics.js';
 import { findWorkflow } from './workflow-registry.js';
 import {
   executeTencentQuickMeeting,
@@ -13,12 +30,28 @@ import {
   WECHAT_MEDIA_VALIDATION_MODE,
   WECHAT_MEDIA_WORKFLOW_ID,
 } from './skills/wechat-media.js';
+import {
+  callTypeForWechatWorkflow,
+  executeWechatVoipCall,
+  isWechatVoipWorkflowId,
+  WECHAT_VOIP_VALIDATION_MODE,
+} from './skills/wechat-voip.js';
+import {
+  executeKuaishouLiveBrowse,
+  KUAISHOU_LIVE_VALIDATION_MODE,
+  KUAISHOU_LIVE_WORKFLOW_ID,
+} from './skills/kuaishou-live.js';
 import { repairTrajectoryWithModel } from './skills/trajectory-repair.js';
 
 const MAX_REPLAY_DELAY_MS = 5 * 60 * 1000;
 const FALLBACK_STEP_DELAY_MS = 400;
 const STATUS_BAR_CORNER_RATIO = 0.025;
 const STATUS_BAR_HEIGHT_RATIO = 0.015;
+const RECORDING_START_ATTEMPTS = 2;
+const HARMONY_ACTION_DETAIL_INITIAL_WAIT_MS = 350;
+const HARMONY_ACTION_DETAIL_MIN_WAIT_MS = 120;
+const HARMONY_ACTION_DETAIL_MAX_WAIT_MS = 800;
+const REPLAY_RECOVERY_ATTEMPTS = 1;
 
 export class ActionRecorder {
   constructor({
@@ -29,6 +62,8 @@ export class ActionRecorder {
     trajectoryRepair = repairTrajectoryWithModel,
     quickMeetingExecutor = executeTencentQuickMeeting,
     wechatMediaExecutor = executeWechatMediaTransfer,
+    wechatVoipExecutor = executeWechatVoipCall,
+    kuaishouLiveExecutor = executeKuaishouLiveBrowse,
     workflows = [],
   } = {}) {
     this.device = device;
@@ -38,6 +73,8 @@ export class ActionRecorder {
     this.trajectoryRepair = trajectoryRepair;
     this.quickMeetingExecutor = quickMeetingExecutor;
     this.wechatMediaExecutor = wechatMediaExecutor;
+    this.wechatVoipExecutor = wechatVoipExecutor;
+    this.kuaishouLiveExecutor = kuaishouLiveExecutor;
     this.workflows = workflows;
     this.sessions = new Map();
     this.activeId = null;
@@ -90,6 +127,8 @@ export class ActionRecorder {
         parameters: sanitizeParameters(workflow?.params || [], parameters),
         runtimeParameters: clone(parameters),
         validationStatus: 'unverified',
+        validationSource: null,
+        skillValidationStatus: 'not_run',
         validationMode: null,
         validationChecks: [],
         validatedAt: null,
@@ -111,8 +150,14 @@ export class ActionRecorder {
         replayFinishedAt: null,
         replayStepIndex: 0,
         replaySource: null,
+        semanticReplayUsed: false,
+        replayRecoveryLog: [],
+        replayHistory: [],
+        replayStats: emptyReplayStats(),
         steps: [],
+        semanticSteps: [],
         correctedSteps: [],
+        correctedSemanticSteps: [],
         correctedSkillFile: null,
         correctionStatus: null,
         correctionSource: null,
@@ -134,6 +179,18 @@ export class ActionRecorder {
         matchedStepCount: 0,
         actionContextCount: 0,
         liveActionEventCount: 0,
+        recordedLayoutCount: 0,
+        recordedLayoutFiles: [],
+        recordedLayouts: [],
+        layoutCaptureSupported: false,
+        evidenceManifest: [],
+        evidenceManifestFile: join(outputDir, 'evidence-manifest.json'),
+        integrityStatus: null,
+        integrityIssues: [],
+        integrityReport: null,
+        recordingProfile: null,
+        deviceBaselines: [],
+        actionDetailTiming: createActionDetailTiming(),
         error: null,
         inputProcess: null,
         outputLines: [],
@@ -142,6 +199,7 @@ export class ActionRecorder {
         rawLiveWriteFailed: false,
         actionContextQueue: Promise.resolve(),
         flushOutput: null,
+        readUiRecordingLayouts: null,
         deviceLock,
       };
       await Promise.all([
@@ -155,18 +213,12 @@ export class ActionRecorder {
         parameterSchema: session.parameterSchema,
         parameters: session.runtimeParameters,
       });
-      const recorder = await this.device.startUiRecording({
-        recordWidgetInfo: true,
-        printToConsole: true,
+      session.recordingProfile = createDeviceProfile({
+        status: deviceStatus,
+        screen: session.screen,
+        contexts: session.contexts,
       });
-      if (!recorder?.process) throw new Error('设备没有返回录制进程');
-
-      session.provider = recorder.provider || session.provider;
-      session.serial = recorder.serial || session.serial;
-      session.recordingMode = recorder.mode || 'unknown';
-      session.inputProcess = recorder.process;
-      session.readUiRecording = recorder.readUiRecording || null;
-      session.flushOutput = attachOutput(session, recorder.process, this.device);
+      await startRecordingProcess(session, this.device);
       await this.#discardUnverifiedSessions(session);
       session.status = 'recording';
       return this.snapshot(id);
@@ -174,6 +226,29 @@ export class ActionRecorder {
       if (session) {
         session.error = error.message;
         session.status = 'failed';
+        session.validationError = error.message;
+        session.recordingQuality = 'unusable';
+        session.qualityScore = 0;
+        session.qualityIssues = [error.message];
+        session.integrityStatus = 'unusable';
+        session.integrityIssues = [`录制未成功启动: ${error.message}`];
+        session.integrityReport = {
+          status: 'unusable',
+          issues: [...session.integrityIssues],
+          actionCount: 0,
+          contextCount: 0,
+          layoutCount: 0,
+          screenshotCount: 0,
+          detailTiming: { ...session.actionDetailTiming },
+        };
+        await stopProcess(session.inputProcess, session.diagnostics);
+        session.flushOutput?.();
+        await session.rawLiveWriteQueue;
+        session.inputProcess = null;
+        session.stoppedAt = this.now().toISOString();
+        await this.#writeArtifacts(session).catch((writeError) => {
+          session.diagnostics.push(`保存失败录制信息失败: ${writeError.message}`);
+        });
       }
       this.activeId = null;
       if (deviceLock && typeof this.device.endSession === 'function') {
@@ -202,6 +277,27 @@ export class ActionRecorder {
           : await this.device.readUiRecording({ serial: session.serial });
       } catch (error) {
         session.diagnostics.push(`读取设备录制结果失败: ${error.message}`);
+      }
+
+      if (session.readUiRecordingLayouts) {
+        try {
+          session.recordedLayouts = await session.readUiRecordingLayouts(remoteOutput, {
+            outputDir: session.outputDir,
+          });
+          session.recordedLayoutFiles = session.recordedLayouts
+            .map((layout) => layout.localFile)
+            .filter(Boolean);
+          session.recordedLayoutCount = session.recordedLayoutFiles.length;
+          for (const layout of session.recordedLayouts) {
+            if (layout.error) {
+              session.diagnostics.push(
+                `读取第 ${layout.actionIndex} 个原生动作布局失败: ${layout.error}`,
+              );
+            }
+          }
+        } catch (error) {
+          session.diagnostics.push(`读取逐动作原生布局失败: ${error.message}`);
+        }
       }
 
       try {
@@ -241,13 +337,61 @@ export class ActionRecorder {
       session.inputProcess = null;
 
       await session.actionContextQueue;
+      reconcileActionContexts(
+        session.contexts,
+        session.steps,
+        session.recordedLayouts,
+      );
       await captureDeviceContext(session, this.device, 'recording-stop', {
         parameterSchema: session.parameterSchema,
         parameters: session.runtimeParameters,
       });
+      const app = this.apps.find((candidate) => candidate.id === session.appId);
+      session.recordingProfile = createDeviceProfile({
+        status: {
+          provider: session.provider,
+          serial: session.serial,
+          platform: session.deviceLock?.platform,
+          model: session.deviceLock?.model,
+        },
+        screen: session.screen,
+        contexts: session.contexts,
+      });
+      session.deviceBaselines = upsertDeviceBaseline(
+        session.deviceBaselines,
+        session.recordingProfile,
+        { at: session.stoppedAt },
+      );
+      session.steps = enrichRecordedSteps({
+        steps: session.steps,
+        contexts: session.contexts,
+        profile: session.recordingProfile,
+      });
+      session.semanticSteps = buildSemanticTrajectory({
+        steps: session.steps,
+        contexts: session.contexts,
+        parameterSchema: session.parameterSchema,
+        workflowId: session.workflowId,
+        app,
+      });
       session.actionContextCount = session.contexts.filter(
         (context) => Number.isInteger(context.actionIndex),
       ).length;
+      session.evidenceManifest = buildEvidenceManifest({
+        steps: session.steps,
+        contexts: session.contexts,
+        provider: session.provider,
+        layoutCaptureSupported: session.layoutCaptureSupported,
+        sensitive: hasSensitiveParameters(session.parameterSchema),
+      });
+      session.integrityReport = assessEvidenceIntegrity({
+        manifest: session.evidenceManifest,
+        actionCount: session.steps.length,
+        liveActionCount: session.liveActionEventCount,
+        detailTiming: session.actionDetailTiming,
+      });
+      session.integrityStatus = session.integrityReport.status;
+      session.integrityIssues = session.integrityReport.issues;
       const recordingQuality = assessRecordingQuality(session, timeline);
       session.recordingQuality = recordingQuality.level;
       session.qualityScore = recordingQuality.score;
@@ -292,6 +436,17 @@ export class ActionRecorder {
         apiKey,
       });
       session.correctedSteps = result.steps;
+      session.correctedSemanticSteps = buildSemanticTrajectory({
+        steps: enrichRecordedSteps({
+          steps: session.correctedSteps,
+          contexts: session.contexts,
+          profile: session.recordingProfile,
+        }),
+        contexts: session.contexts,
+        parameterSchema: session.parameterSchema,
+        workflowId: session.workflowId,
+        app: this.apps.find((candidate) => candidate.id === session.appId),
+      });
       session.correctionSource = 'model_repaired';
       session.correctionChanges = result.changes;
       session.correctionConfidence = result.confidence;
@@ -321,9 +476,33 @@ export class ActionRecorder {
     if (session.status === 'recording' || session.status === 'starting' || session.status === 'stopping') {
       throw new Error('录制尚未结束，不能回放');
     }
+    const isWechatVoip = isWechatVoipWorkflowId(session.workflowId);
+    const usesWorkflowSkill = workflowUsesStrictSkill(session.workflowId);
     const useCorrected = source !== 'raw' && session.correctedSteps?.length;
-    const replaySteps = useCorrected ? session.correctedSteps : session.steps;
-    if (!replaySteps.length) throw new Error('轨迹为空，不能回放');
+    const baseReplaySteps = useCorrected ? session.correctedSteps : session.steps;
+    const app = this.apps.find((candidate) => candidate.id === session.appId);
+    const semanticReplaySteps =
+      !usesWorkflowSkill && source !== 'raw'
+        ? useCorrected
+          ? session.correctedSemanticSteps?.length
+            ? session.correctedSemanticSteps
+            : buildSemanticTrajectory({
+                steps: enrichRecordedSteps({
+                  steps: baseReplaySteps,
+                  contexts: session.contexts,
+                  profile: session.recordingProfile,
+                }),
+                contexts: session.contexts,
+                parameterSchema: session.parameterSchema,
+                workflowId: session.workflowId,
+                app,
+              })
+          : session.semanticSteps
+        : [];
+    const replaySteps = semanticReplaySteps.length
+      ? semanticReplaySteps
+      : baseReplaySteps;
+    if (!replaySteps.length && !usesWorkflowSkill) throw new Error('轨迹为空，不能回放');
     if (this.activeId && this.activeId !== id) throw new Error('已有录制或回放任务正在运行');
 
     const replaySpeed = clampNumber(speed, 0.1, 10, 1);
@@ -338,15 +517,35 @@ export class ActionRecorder {
     session.parameters = sanitizeParameters(session.parameterSchema, replayParameters);
     this.activeId = id;
     session.status = 'replaying';
-    session.replaySource = useCorrected ? 'corrected' : 'raw';
+    session.replaySource = useCorrected
+      ? 'corrected'
+      : semanticReplaySteps.length
+        ? 'semantic'
+        : 'raw';
+    session.semanticReplayUsed = semanticReplaySteps.length > 0;
     session.replayStartedAt = this.now().toISOString();
     session.replayFinishedAt = null;
     session.replayStepIndex = 0;
     session.validationMode = null;
     session.validationChecks = [];
+    session.validationSource = usesWorkflowSkill
+      ? 'workflow_skill'
+      : 'recorded_trajectory';
+    session.skillValidationStatus = usesWorkflowSkill ? 'running' : 'not_applicable';
     session.effectiveDurationMs = null;
     session.error = null;
+    session.replayRecoveryLog = [];
     let replayDeviceLock = null;
+    let currentProfile = null;
+    const replayAttempt = {
+      id: randomUUID(),
+      startedAt: session.replayStartedAt,
+      source: session.replaySource,
+      status: 'running',
+      deviceProfileId: null,
+      recoveryCount: 0,
+      error: null,
+    };
 
     try {
       if (typeof this.device.beginSession === 'function') {
@@ -357,8 +556,20 @@ export class ActionRecorder {
       const screen =
         replayDeviceLock?.screen ||
         (await this.device.getScreenSize?.().catch(() => null));
+      const currentSnapshot = await this.device.getUiTextSnapshot?.().catch(() => null);
+      currentProfile = selectDeviceProfile(
+        session.deviceBaselines,
+        createDeviceProfile({
+          status: replayDeviceLock || {
+            provider: session.provider,
+            serial: session.serial,
+          },
+          screen,
+          snapshot: currentSnapshot,
+        }),
+      );
+      replayAttempt.deviceProfileId = currentProfile?.id || null;
       if (session.workflowId === TENCENT_QUICK_MEETING_WORKFLOW_ID) {
-        const app = this.apps.find((candidate) => candidate.id === session.appId);
         const result = await this.quickMeetingExecutor({
           device: this.device,
           app,
@@ -367,8 +578,11 @@ export class ActionRecorder {
           sourceScreen: session.screen,
           executeStep: (step, options = {}) =>
             replayStep(this.device, step, {
-              sourceScreen: session.screen,
-              targetScreen: options.targetScreen || screen,
+              sourceProfile: session.recordingProfile,
+              targetProfile:
+                options.targetScreen && currentProfile
+                  ? { ...currentProfile, screen: options.targetScreen }
+                  : currentProfile,
               parameters: executionParameters,
             }),
           onStep: (stepIndex) => {
@@ -380,7 +594,6 @@ export class ActionRecorder {
         session.effectiveDurationMs = result.effectiveDurationMs ?? null;
         session.replayStepIndex = result.replayStepIndex || session.replayStepIndex;
       } else if (session.workflowId === WECHAT_MEDIA_WORKFLOW_ID) {
-        const app = this.apps.find((candidate) => candidate.id === session.appId);
         const result = await this.wechatMediaExecutor({
           device: this.device,
           app,
@@ -398,6 +611,86 @@ export class ActionRecorder {
         session.replaySource = result.replaySource || session.replaySource;
         if (result.correctedSteps?.length) {
           session.correctedSteps = clone(result.correctedSteps);
+          session.correctedSemanticSteps = buildSemanticTrajectory({
+            steps: enrichRecordedSteps({
+              steps: session.correctedSteps,
+              contexts: session.contexts,
+              profile: session.recordingProfile,
+            }),
+            contexts: session.contexts,
+            parameterSchema: session.parameterSchema,
+            workflowId: session.workflowId,
+            app,
+          });
+          session.correctionStatus = 'completed';
+          session.correctionSource = 'workflow_skill_repaired';
+          session.correctionChanges = clone(result.correctionChanges || []);
+          session.correctionConfidence = result.correctionConfidence ?? null;
+          session.correctionError = null;
+        }
+      } else if (isWechatVoip) {
+        const result = await this.wechatVoipExecutor({
+          device: this.device,
+          app,
+          workflowId: session.workflowId,
+          callType: callTypeForWechatWorkflow(session.workflowId),
+          parameters: executionParameters,
+          onStep: (stepIndex) => {
+            session.replayStepIndex = stepIndex;
+          },
+        });
+        session.validationMode = result.validationMode;
+        session.validationChecks = result.validationChecks || [];
+        session.effectiveDurationMs = result.effectiveDurationMs ?? null;
+        session.replayStepIndex = result.replayStepIndex || session.replayStepIndex;
+        session.replaySource = result.replaySource || session.replaySource;
+        if (result.correctedSteps?.length) {
+          session.correctedSteps = clone(result.correctedSteps);
+          session.correctedSemanticSteps = buildSemanticTrajectory({
+            steps: enrichRecordedSteps({
+              steps: session.correctedSteps,
+              contexts: session.contexts,
+              profile: session.recordingProfile,
+            }),
+            contexts: session.contexts,
+            parameterSchema: session.parameterSchema,
+            workflowId: session.workflowId,
+            app,
+          });
+          session.correctionStatus = 'completed';
+          session.correctionSource = 'workflow_skill_repaired';
+          session.correctionChanges = clone(result.correctionChanges || []);
+          session.correctionConfidence = result.correctionConfidence ?? null;
+          session.correctionError = null;
+        }
+      } else if (session.workflowId === KUAISHOU_LIVE_WORKFLOW_ID) {
+        const result = await this.kuaishouLiveExecutor({
+          device: this.device,
+          app,
+          parameters: executionParameters,
+          validationDurationMs,
+          onStep: (stepIndex) => {
+            session.replayStepIndex = stepIndex;
+          },
+        });
+        session.validationMode = result.validationMode;
+        session.validationChecks = result.validationChecks || [];
+        session.effectiveDurationMs = result.effectiveDurationMs ?? null;
+        session.replayStepIndex = result.replayStepIndex || session.replayStepIndex;
+        session.replaySource = result.replaySource || session.replaySource;
+        if (result.correctedSteps?.length) {
+          session.correctedSteps = clone(result.correctedSteps);
+          session.correctedSemanticSteps = buildSemanticTrajectory({
+            steps: enrichRecordedSteps({
+              steps: session.correctedSteps,
+              contexts: session.contexts,
+              profile: session.recordingProfile,
+            }),
+            contexts: session.contexts,
+            parameterSchema: session.parameterSchema,
+            workflowId: session.workflowId,
+            app,
+          });
           session.correctionStatus = 'completed';
           session.correctionSource = 'workflow_skill_repaired';
           session.correctionChanges = clone(result.correctionChanges || []);
@@ -405,23 +698,29 @@ export class ActionRecorder {
           session.correctionError = null;
         }
       } else {
-        for (const [index, step] of replaySteps.entries()) {
-          const delayMs = Math.min(MAX_REPLAY_DELAY_MS, Math.max(0, Number(step.delayMs) || 0));
-          if (delayMs > 0) await sleep(delayMs / replaySpeed);
-          await replayStep(this.device, step, {
-            sourceScreen: session.screen,
-            targetScreen: screen,
-            parameters: executionParameters,
-          });
-          session.replayStepIndex = index + 1;
-        }
+        const result = await executeRecordedTrajectory({
+          device: this.device,
+          steps: replaySteps,
+          sourceProfile: session.recordingProfile,
+          targetProfile: currentProfile,
+          parameters: executionParameters,
+          app,
+          replaySpeed,
+          onStep: (stepIndex) => {
+            session.replayStepIndex = stepIndex;
+          },
+          onRecovery: (entry) => {
+            session.replayRecoveryLog.push(entry);
+            replayAttempt.recoveryCount += 1;
+          },
+        });
         session.validationMode = 'trajectory_completed_v1';
         session.validationChecks = [
           {
             id: 'trajectory_completed',
             label: '动作轨迹回放',
             status: 'passed',
-            detail: `${replaySteps.length} 步`,
+            detail: `${result.executedStepCount} 步，状态检查 ${result.stateCheckCount} 次，恢复 ${result.recoveryCount} 次`,
           },
         ];
       }
@@ -431,9 +730,21 @@ export class ActionRecorder {
       }
       session.status = 'replayed';
       session.validationStatus = 'verified';
+      session.skillValidationStatus = usesWorkflowSkill
+        ? 'verified'
+        : 'not_applicable';
       session.validatedAt = this.now().toISOString();
       session.validationError = null;
       session.replayFinishedAt = this.now().toISOString();
+      session.deviceBaselines = upsertDeviceBaseline(
+        session.deviceBaselines,
+        currentProfile,
+        { passed: true, at: session.replayFinishedAt },
+      );
+      finishReplayAttempt(session, replayAttempt, {
+        status: 'passed',
+        finishedAt: session.replayFinishedAt,
+      });
       await captureDeviceContext(session, this.device, 'replay-success', {
         parameterSchema: session.parameterSchema,
         parameters: replayParameters,
@@ -459,10 +770,23 @@ export class ActionRecorder {
         error.replayStepIndex ?? session.replayStepIndex;
       session.status = 'replay_failed';
       session.validationStatus = 'unverified';
+      session.skillValidationStatus = usesWorkflowSkill
+        ? 'failed'
+        : 'not_applicable';
       session.validatedAt = null;
       session.validationError = error.message;
       session.error = error.message;
       session.replayFinishedAt = this.now().toISOString();
+      session.deviceBaselines = upsertDeviceBaseline(
+        session.deviceBaselines,
+        currentProfile,
+        { passed: false, at: session.replayFinishedAt },
+      );
+      finishReplayAttempt(session, replayAttempt, {
+        status: 'failed',
+        finishedAt: session.replayFinishedAt,
+        error: error.message,
+      });
       await captureDeviceContext(session, this.device, 'replay-failure', {
         parameterSchema: session.parameterSchema,
         parameters: replayParameters,
@@ -501,22 +825,34 @@ export class ActionRecorder {
         : null;
       const app = this.apps.find((candidate) => candidate.id === metadata.appId);
       const outputDir = dirname(trajectoryFile);
-      const parameterSchema = metadata.params || workflow?.params || [];
+      const parameterSchema = workflow?.params || metadata.params || [];
       const strictTencentValidation =
         metadata.validationMode === 'tencent_quick_meeting_v1' &&
         allValidationChecksPassed(metadata.validationChecks);
       const strictWechatMediaValidation =
         metadata.validationMode === WECHAT_MEDIA_VALIDATION_MODE &&
         allValidationChecksPassed(metadata.validationChecks);
+      const strictWechatVoipValidation =
+        metadata.validationMode === WECHAT_VOIP_VALIDATION_MODE &&
+        allValidationChecksPassed(metadata.validationChecks);
+      const strictKuaishouLiveValidation =
+        metadata.validationMode === KUAISHOU_LIVE_VALIDATION_MODE &&
+        allValidationChecksPassed(metadata.validationChecks);
       const requiresStrictValidation =
         metadata.workflowId === TENCENT_QUICK_MEETING_WORKFLOW_ID ||
-        metadata.workflowId === WECHAT_MEDIA_WORKFLOW_ID;
+        metadata.workflowId === WECHAT_MEDIA_WORKFLOW_ID ||
+        isWechatVoipWorkflowId(metadata.workflowId) ||
+        metadata.workflowId === KUAISHOU_LIVE_WORKFLOW_ID;
       const hasStrictValidation =
         metadata.workflowId === TENCENT_QUICK_MEETING_WORKFLOW_ID
           ? strictTencentValidation
           : metadata.workflowId === WECHAT_MEDIA_WORKFLOW_ID
             ? strictWechatMediaValidation
-            : true;
+            : isWechatVoipWorkflowId(metadata.workflowId)
+              ? strictWechatVoipValidation
+              : metadata.workflowId === KUAISHOU_LIVE_WORKFLOW_ID
+                ? strictKuaishouLiveValidation
+              : true;
       const downgradeStrictValidation =
         requiresStrictValidation &&
         metadata.validationStatus === 'verified' &&
@@ -524,6 +860,22 @@ export class ActionRecorder {
       const validationStatus = downgradeStrictValidation
         ? 'unverified'
         : metadata.validationStatus || 'unverified';
+      const validationSource = downgradeStrictValidation
+        ? null
+        : metadata.validationSource ||
+          (validationStatus === 'verified'
+            ? requiresStrictValidation
+              ? 'workflow_skill'
+              : 'recorded_trajectory'
+            : null);
+      const skillValidationStatus = downgradeStrictValidation
+        ? 'unverified'
+        : metadata.skillValidationStatus ||
+          (validationSource === 'workflow_skill'
+            ? validationStatus === 'verified'
+              ? 'verified'
+              : 'unverified'
+            : 'not_applicable');
 
       const session = {
         id: metadata.id,
@@ -547,6 +899,8 @@ export class ActionRecorder {
           metadata.parameters,
         ),
         validationStatus,
+        validationSource,
+        skillValidationStatus,
         validationMode: downgradeStrictValidation
           ? null
           : metadata.validationMode || null,
@@ -559,7 +913,11 @@ export class ActionRecorder {
         validationError: downgradeStrictValidation
           ? metadata.workflowId === WECHAT_MEDIA_WORKFLOW_ID
             ? '旧版微信媒体录制缺少严格业务状态验证，请重新回放验证'
-            : '旧版腾讯会议录制缺少严格业务状态验证，请重新回放验证'
+            : isWechatVoipWorkflowId(metadata.workflowId)
+              ? '旧版微信音视频通话录制缺少严格业务状态验证，请重新回放验证'
+              : metadata.workflowId === KUAISHOU_LIVE_WORKFLOW_ID
+                ? '旧版快手直播录制缺少严格业务状态验证，请重新回放验证'
+              : '旧版腾讯会议录制缺少严格业务状态验证，请重新回放验证'
           : metadata.validationError || null,
         effectiveDurationMs: metadata.effectiveDurationMs ?? null,
         status: validationStatus === 'verified' ? 'replayed' : 'stopped',
@@ -578,8 +936,17 @@ export class ActionRecorder {
         replayFinishedAt: metadata.replayFinishedAt || null,
         replayStepIndex: Number(metadata.replayStepIndex) || 0,
         replaySource: metadata.replaySource || null,
+        semanticReplayUsed: Boolean(metadata.semanticReplayUsed),
+        replayRecoveryLog: clone(metadata.replayRecoveryLog || []),
+        replayHistory: clone(metadata.replayHistory || []),
+        replayStats: normalizeReplayStats(
+          metadata.replayStats,
+          metadata.replayHistory,
+        ),
         steps: clone(metadata.steps),
+        semanticSteps: clone(metadata.semanticSteps || []),
         correctedSteps: [],
+        correctedSemanticSteps: [],
         correctedSkillFile: null,
         correctionStatus: null,
         correctionSource: null,
@@ -601,6 +968,32 @@ export class ActionRecorder {
         matchedStepCount: Number(metadata.matchedStepCount) || 0,
         actionContextCount: Number(metadata.actionContextCount) || 0,
         liveActionEventCount: Number(metadata.liveActionEventCount) || 0,
+        recordedLayoutCount: Number(metadata.recordedLayoutCount) || 0,
+        recordedLayoutFiles: clone(metadata.recordedLayoutFiles || []),
+        recordedLayouts: [],
+        layoutCaptureSupported: Boolean(metadata.layoutCaptureSupported),
+        evidenceManifest: clone(metadata.evidenceManifest || []),
+        evidenceManifestFile:
+          metadata.evidenceManifestFile || join(outputDir, 'evidence-manifest.json'),
+        integrityStatus: metadata.integrityStatus || null,
+        integrityIssues: clone(metadata.integrityIssues || []),
+        integrityReport: metadata.integrityReport
+          ? clone(metadata.integrityReport)
+          : null,
+        recordingProfile: metadata.recordingProfile
+          ? clone(metadata.recordingProfile)
+          : createDeviceProfile({
+              status: {
+                provider: metadata.provider,
+                serial: metadata.serial,
+              },
+              screen: metadata.screen,
+            }),
+        deviceBaselines: clone(metadata.deviceBaselines || []),
+        actionDetailTiming: {
+          ...createActionDetailTiming(),
+          ...(metadata.actionDetailTiming || {}),
+        },
         error: null,
         inputProcess: null,
         outputLines: [],
@@ -609,6 +1002,7 @@ export class ActionRecorder {
         rawLiveWriteFailed: false,
         actionContextQueue: Promise.resolve(),
         flushOutput: null,
+        readUiRecordingLayouts: null,
       };
 
       const correctedSkillFile = join(outputDir, 'skill-corrected.json');
@@ -628,6 +1022,9 @@ export class ActionRecorder {
         );
         if (Array.isArray(corrected.steps) && corrected.steps.length) {
           session.correctedSteps = corrected.steps;
+          session.correctedSemanticSteps = Array.isArray(corrected.semanticSteps)
+            ? corrected.semanticSteps
+            : [];
           session.correctedSkillFile = correctedSkillFile;
           session.correctionStatus = 'completed';
           session.correctionSource = corrected.source || 'model_repaired';
@@ -636,6 +1033,55 @@ export class ActionRecorder {
         }
       } catch {
         // Corrected trajectories are optional.
+      }
+      if (!session.semanticSteps.length && session.steps.length) {
+        session.steps = enrichRecordedSteps({
+          steps: session.steps,
+          contexts: session.contexts,
+          profile: session.recordingProfile,
+        });
+        session.semanticSteps = buildSemanticTrajectory({
+          steps: session.steps,
+          contexts: session.contexts,
+          parameterSchema: session.parameterSchema,
+          workflowId: session.workflowId,
+          app,
+        });
+      }
+      if (
+        session.correctedSteps.length &&
+        !session.correctedSemanticSteps.length
+      ) {
+        session.correctedSemanticSteps = buildSemanticTrajectory({
+          steps: enrichRecordedSteps({
+            steps: session.correctedSteps,
+            contexts: session.contexts,
+            profile: session.recordingProfile,
+          }),
+          contexts: session.contexts,
+          parameterSchema: session.parameterSchema,
+          workflowId: session.workflowId,
+          app,
+        });
+      }
+      if (!session.evidenceManifest.length && session.steps.length) {
+        session.evidenceManifest = buildEvidenceManifest({
+          steps: session.steps,
+          contexts: session.contexts,
+          provider: session.provider,
+          layoutCaptureSupported: session.layoutCaptureSupported,
+          sensitive: hasSensitiveParameters(session.parameterSchema),
+        });
+      }
+      if (!session.integrityReport && session.evidenceManifest.length) {
+        session.integrityReport = assessEvidenceIntegrity({
+          manifest: session.evidenceManifest,
+          actionCount: session.steps.length,
+          liveActionCount: session.liveActionEventCount,
+          detailTiming: session.actionDetailTiming,
+        });
+        session.integrityStatus = session.integrityReport.status;
+        session.integrityIssues = session.integrityReport.issues;
       }
 
       this.sessions.set(session.id, session);
@@ -658,6 +1104,70 @@ export class ActionRecorder {
     );
   }
 
+  getVerifiedWorkflowExecution(workflowId) {
+    const session = [...this.sessions.values()]
+      .filter(
+        (candidate) =>
+          candidate.workflowId === workflowId &&
+          candidate.validationStatus === 'verified',
+      )
+      .sort((left, right) =>
+        executionTimestamp(right).localeCompare(executionTimestamp(left)),
+      )[0];
+    if (!session) return null;
+
+    const useCorrected = Boolean(session.correctedSteps?.length);
+    return clone({
+      recordingId: session.id,
+      workflowId: session.workflowId,
+      appId: session.appId,
+      validationStatus: session.validationStatus,
+      validationMode: session.validationMode,
+      validatedAt: session.validatedAt,
+      steps: useCorrected ? session.correctedSteps : session.steps,
+      source: useCorrected ? 'corrected' : 'raw',
+      screen: session.screen,
+      recordingProfile: session.recordingProfile,
+    });
+  }
+
+  getRegressionSummary() {
+    const recordings = [...this.sessions.values()].map((session) => ({
+      id: session.id,
+      appId: session.appId,
+      appName: session.appName,
+      workflowId: session.workflowId,
+      featureName: session.featureName,
+      replayStats: session.replayStats || emptyReplayStats(),
+      deviceBaselines: (session.deviceBaselines || []).map((baseline) => ({
+        id: baseline.id,
+        serial: baseline.serial,
+        model: baseline.model,
+        orientation: baseline.orientation,
+        screen: baseline.screen,
+        successfulReplays: Number(baseline.successfulReplays) || 0,
+        failedReplays: Number(baseline.failedReplays) || 0,
+        lastReplayAt: baseline.lastReplayAt || null,
+        lastReplayStatus: baseline.lastReplayStatus || null,
+      })),
+    }));
+    const attempts = recordings.reduce(
+      (total, recording) => total + recording.replayStats.attempts,
+      0,
+    );
+    const passed = recordings.reduce(
+      (total, recording) => total + recording.replayStats.passed,
+      0,
+    );
+    return {
+      attempts,
+      passed,
+      failed: Math.max(0, attempts - passed),
+      successRate: attempts ? passed / attempts : null,
+      recordings,
+    };
+  }
+
   list() {
     return [...this.sessions.values()]
       .sort((left, right) => String(right.startedAt).localeCompare(String(left.startedAt)))
@@ -678,13 +1188,20 @@ export class ActionRecorder {
       rawLiveWriteFailed,
       actionContextQueue,
       flushOutput,
+      readUiRecordingLayouts,
+      recordedLayouts,
       ...rest
     } = session;
     return {
       ...rest,
       stepCount: session.steps.length,
+      semanticStepCount: session.semanticSteps?.length || 0,
       correctedStepCount: session.correctedSteps?.length || 0,
+      correctedSemanticStepCount:
+        session.correctedSemanticSteps?.length || 0,
       contextCount: session.contexts.length,
+      replayAvailable:
+        session.steps.length > 0 || isWechatVoipWorkflowId(session.workflowId),
       active: this.activeId === id,
     };
   }
@@ -781,7 +1298,7 @@ export class ActionRecorder {
 
   async #writeArtifacts(session) {
     const metadata = {
-      version: 4,
+      version: 5,
       id: session.id,
       appId: session.appId,
       appName: session.appName,
@@ -795,6 +1312,8 @@ export class ActionRecorder {
       screen: session.screen,
       parameters: session.parameters,
       validationStatus: session.validationStatus,
+      validationSource: session.validationSource,
+      skillValidationStatus: session.skillValidationStatus,
       validationMode: session.validationMode,
       validationChecks: session.validationChecks,
       validatedAt: session.validatedAt,
@@ -806,6 +1325,10 @@ export class ActionRecorder {
       replayFinishedAt: session.replayFinishedAt,
       replayStepIndex: session.replayStepIndex,
       replaySource: session.replaySource,
+      semanticReplayUsed: session.semanticReplayUsed,
+      replayRecoveryLog: session.replayRecoveryLog,
+      replayHistory: session.replayHistory,
+      replayStats: session.replayStats,
       timelineSource: session.timelineSource,
       timelineQuality: session.timelineQuality,
       recordingQuality: session.recordingQuality,
@@ -818,13 +1341,41 @@ export class ActionRecorder {
       matchedStepCount: session.matchedStepCount,
       actionContextCount: session.actionContextCount,
       liveActionEventCount: session.liveActionEventCount,
+      recordedLayoutCount: session.recordedLayoutCount,
+      recordedLayoutFiles: session.recordedLayoutFiles,
+      layoutCaptureSupported: session.layoutCaptureSupported,
+      evidenceManifest: session.evidenceManifest,
+      evidenceManifestFile: session.evidenceManifestFile,
+      integrityStatus: session.integrityStatus,
+      integrityIssues: session.integrityIssues,
+      integrityReport: session.integrityReport,
+      recordingProfile: session.recordingProfile,
+      deviceBaselines: session.deviceBaselines,
+      actionDetailTiming: session.actionDetailTiming,
       rawLiveFile: session.rawLiveFile,
       rawRemoteFile: session.rawRemoteFile,
       contextFile: session.contextFile,
       screenshots: session.screenshots,
       steps: session.steps,
+      semanticSteps: session.semanticSteps,
     };
     await writeFile(session.trajectoryFile, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
+    await writeFile(
+      session.evidenceManifestFile,
+      `${JSON.stringify(
+        {
+          version: 1,
+          recordingId: session.id,
+          integrityStatus: session.integrityStatus,
+          integrityIssues: session.integrityIssues,
+          integrityReport: session.integrityReport,
+          entries: session.evidenceManifest,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     if (session.contexts.length) {
       await writeFile(
         session.contextFile,
@@ -844,7 +1395,7 @@ export class ActionRecorder {
       session.skillFile,
       `${JSON.stringify(
         {
-          version: 4,
+          version: 5,
           name: session.featureName,
           appId: session.appId,
           appName: session.appName,
@@ -853,6 +1404,8 @@ export class ActionRecorder {
           params: session.parameterSchema,
           parameters: session.parameters,
           validationStatus: session.validationStatus,
+          validationSource: session.validationSource,
+          skillValidationStatus: session.skillValidationStatus,
           validationMode: session.validationMode,
           validationChecks: session.validationChecks,
           validatedAt: session.validatedAt,
@@ -862,6 +1415,10 @@ export class ActionRecorder {
           qualityScore: session.qualityScore,
           qualityIssues: session.qualityIssues,
           steps: session.steps,
+          semanticSteps: session.semanticSteps,
+          integrityStatus: session.integrityStatus,
+          integrityIssues: session.integrityIssues,
+          recordingProfile: session.recordingProfile,
         },
         null,
         2,
@@ -877,7 +1434,7 @@ export class ActionRecorder {
       correctedSkillFile,
       `${JSON.stringify(
         {
-          version: 3,
+          version: 5,
           name: session.featureName,
           appId: session.appId,
           appName: session.appName,
@@ -886,14 +1443,24 @@ export class ActionRecorder {
           params: session.parameterSchema,
           parameters: session.parameters,
           validationStatus: session.validationStatus,
+          validationSource: session.validationSource,
+          skillValidationStatus: session.skillValidationStatus,
           validationMode: session.validationMode,
           validationChecks: session.validationChecks,
           validatedAt: session.validatedAt,
           validationError: session.validationError,
           effectiveDurationMs: session.effectiveDurationMs,
+          recordingQuality: session.recordingQuality,
+          qualityScore: session.qualityScore,
+          qualityIssues: session.qualityIssues,
+          integrityStatus: session.integrityStatus,
+          integrityIssues: session.integrityIssues,
+          replayStats: session.replayStats,
+          deviceBaselines: session.deviceBaselines,
           confidence: session.correctionConfidence,
           changes: session.correctionChanges,
           steps: session.correctedSteps,
+          semanticSteps: session.correctedSemanticSteps,
         },
         null,
         2,
@@ -944,7 +1511,18 @@ export function selectRecordedTrajectory({
   let source = 'none';
   let matchedStepCount = 0;
 
-  if (remoteSteps.length && streamSteps.length) {
+  // Harmony mixes Point and Widget details. Complete action headers carry the
+  // timing for both; coordinate-only merging loses the Widget action delays.
+  const completeMarkers = remoteSteps.length > 0 &&
+    remoteSteps.length === liveTimingMarkers.length &&
+    remoteSteps.every((step, index) => step.type === liveTimingMarkers[index].type) &&
+    liveTimingMarkers.every((marker) => marker.harmonyHeader) &&
+    markersMatchRemotePoints(remoteSteps, receivedLines);
+  if (completeMarkers) {
+    steps = applyLiveTimingMarkers(remoteSteps, liveTimingMarkers).steps;
+    matchedStepCount = remoteSteps.length;
+    source = 'remote+live-timestamps';
+  } else if (remoteSteps.length && streamSteps.length) {
     const merged = mergeRecordedTrajectories(remoteSteps, streamSteps);
     steps = merged.steps;
     matchedStepCount = merged.matchedStepCount;
@@ -1018,13 +1596,31 @@ export function selectRecordedTrajectory({
   };
 }
 
-async function replayStep(device, step, { sourceScreen, targetScreen, parameters = {} }) {
-  const scale = getScreenScale(sourceScreen, targetScreen);
-  const target = buildReplayTarget(step.context);
+async function replayStep(
+  device,
+  step,
+  {
+    sourceProfile = null,
+    targetProfile = null,
+    parameters = {},
+    onStateCheck = () => {},
+  } = {},
+) {
+  if (step.type === 'hold_state' || step.type === 'assert_state') {
+    return executeStateStep(device, step, {
+      parameters,
+      onCheck: onStateCheck,
+    });
+  }
+  const target = resolveReplayTarget(
+    step.target || buildReplayTarget(step.context),
+    targetProfile,
+  );
   if (step.type === 'tap') {
+    const point = resolveProfiledPoint(step, sourceProfile, targetProfile);
     await device.tap({
-      x: scaleCoordinate(step.x, scale.x),
-      y: scaleCoordinate(step.y, scale.y),
+      x: point.x,
+      y: point.y,
       ...(target ? { target } : {}),
     });
     return;
@@ -1033,20 +1629,19 @@ async function replayStep(device, step, { sourceScreen, targetScreen, parameters
     if (typeof device.longPress !== 'function') {
       throw new Error('当前设备适配器不支持长按回放');
     }
+    const point = resolveProfiledPoint(step, sourceProfile, targetProfile);
     await device.longPress({
-      x: scaleCoordinate(step.x, scale.x),
-      y: scaleCoordinate(step.y, scale.y),
+      x: point.x,
+      y: point.y,
       durationMs: step.durationMs,
       ...(target ? { target } : {}),
     });
     return;
   }
   if (step.type === 'swipe') {
+    const swipe = resolveProfiledSwipe(step, sourceProfile, targetProfile);
     await device.swipe({
-      x1: scaleCoordinate(step.x1, scale.x),
-      y1: scaleCoordinate(step.y1, scale.y),
-      x2: scaleCoordinate(step.x2, scale.x),
-      y2: scaleCoordinate(step.y2, scale.y),
+      ...swipe,
       durationMs: step.durationMs,
     });
     return;
@@ -1057,10 +1652,205 @@ async function replayStep(device, step, { sourceScreen, targetScreen, parameters
   }
   if (step.type === 'input_text') {
     if (typeof device.inputText !== 'function') throw new Error('当前设备适配器不支持文本输入回放');
-    await device.inputText(resolveParameterTemplate(step.text, parameters));
+    const hasPoint = Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y));
+    const point = hasPoint
+      ? resolveProfiledPoint(step, sourceProfile, targetProfile)
+      : null;
+    await device.inputText(resolveParameterTemplate(step.text, parameters), {
+      ...(point ? point : {}),
+      ...(target ? { target } : {}),
+      clearExisting: Boolean(step.clearExisting),
+    });
     return;
   }
   throw new Error(`不支持回放的动作类型: ${step.type}`);
+}
+
+async function executeRecordedTrajectory({
+  device,
+  steps,
+  sourceProfile,
+  targetProfile,
+  parameters,
+  app,
+  replaySpeed,
+  onStep,
+  onRecovery,
+}) {
+  let stateCheckCount = 0;
+  let recoveryCount = 0;
+  let previousAction = null;
+
+  for (const [index, originalStep] of steps.entries()) {
+    const step =
+      originalStep.type === 'hold_state' &&
+      !originalStep.durationParameter &&
+      replaySpeed !== 1
+        ? {
+            ...originalStep,
+            durationMs: Math.round(
+              Math.max(0, Number(originalStep.durationMs) || 0) / replaySpeed,
+            ),
+          }
+        : originalStep;
+    const delayMs = Math.min(
+      MAX_REPLAY_DELAY_MS,
+      Math.max(0, Number(step.delayMs) || 0),
+    );
+    if (delayMs > 0) await sleep(delayMs / replaySpeed);
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= REPLAY_RECOVERY_ATTEMPTS; attempt += 1) {
+      try {
+        await replayStep(device, step, {
+          sourceProfile,
+          targetProfile,
+          parameters,
+          onStateCheck: () => {
+            stateCheckCount += 1;
+          },
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= REPLAY_RECOVERY_ATTEMPTS) break;
+        const recovery = await recoverRecordedReplay({
+          device,
+          step,
+          previousAction,
+          app,
+          sourceProfile,
+          targetProfile,
+          parameters,
+          error,
+        });
+        if (!recovery.recovered) break;
+        recoveryCount += 1;
+        onRecovery({
+          at: new Date().toISOString(),
+          stepIndex: index + 1,
+          stepType: step.type,
+          reason: error.message,
+          action: recovery.action,
+          focus: recovery.focus || null,
+        });
+      }
+    }
+    if (lastError) {
+      lastError.replayStepIndex = index + 1;
+      throw lastError;
+    }
+    if (isActionStep(step)) previousAction = step;
+    onStep(index + 1);
+  }
+  return {
+    executedStepCount: steps.length,
+    stateCheckCount,
+    recoveryCount,
+  };
+}
+
+async function recoverRecordedReplay({
+  device,
+  step,
+  previousAction,
+  app,
+  sourceProfile,
+  targetProfile,
+  parameters,
+  error,
+}) {
+  const [focus, snapshot] = await Promise.all([
+    device.getCurrentFocus?.().catch(() => null),
+    device.getUiTextSnapshot?.().catch(() => null),
+  ]);
+  const currentPackage = String(
+    focus?.bundleName || focus?.packageName || '',
+  );
+  const appPackages = new Set(
+    [app?.harmonyBundleName, app?.packageName].filter(Boolean).map(String),
+  );
+  const expectedPackages = new Set(
+    (step.state?.packages || []).filter(Boolean).map(String),
+  );
+  const expectedAppForeground =
+    appPackages.size > 0 &&
+    (!currentPackage ||
+      (!appPackages.has(currentPackage) &&
+        (!expectedPackages.size || !expectedPackages.has(currentPackage))));
+  if (
+    expectedAppForeground &&
+    step.recovery?.relaunchApp !== false &&
+    app?.packageName &&
+    typeof device.launchPackage === 'function'
+  ) {
+    await device.launchPackage(app.packageName);
+    await sleep(1500);
+    return { recovered: true, action: 'relaunch_app', focus };
+  }
+
+  if (
+    error?.code === 'RECORDED_STATE_MISMATCH' &&
+    step.recovery?.retryPreviousAction &&
+    previousAction?.target &&
+    !isNonRepeatableAction(previousAction)
+  ) {
+    await replayStep(device, previousAction, {
+      sourceProfile,
+      targetProfile,
+      parameters,
+    });
+    await sleep(600);
+    return {
+      recovered: true,
+      action: 'refresh_layout_and_retry_previous_action',
+      focus,
+      snapshot: Boolean(snapshot),
+    };
+  }
+
+  if (
+    /UI target not found|layout|dumpLayout|temporar|timeout|超时/i.test(
+      String(error?.message || ''),
+    )
+  ) {
+    await sleep(500);
+    return {
+      recovered: true,
+      action: 'refresh_layout_and_retry',
+      focus,
+      snapshot: Boolean(snapshot),
+    };
+  }
+  return { recovered: false, action: null, focus };
+}
+
+function isNonRepeatableAction(step) {
+  const label = [
+    step?.target?.text,
+    ...(step?.target?.texts || []),
+  ]
+    .filter(Boolean)
+    .join('|');
+  return /发送|提交|确认|删除|支付|购买|拨打|挂断|send|submit|delete|pay/i.test(
+    label,
+  );
+}
+
+function resolveReplayTarget(target, targetProfile) {
+  if (!target) return null;
+  return {
+    ...target,
+    ...(target.normalizedRegion
+      ? {
+          region: resolveNormalizedRegion(
+            target.normalizedRegion,
+            targetProfile,
+          ),
+        }
+      : {}),
+  };
 }
 
 function buildReplayTarget(context) {
@@ -1076,6 +1866,7 @@ function buildReplayTarget(context) {
   return {
     texts: [text],
     partial: false,
+    required: false,
   };
 }
 
@@ -1188,6 +1979,20 @@ function parseUiRecordLine(line, candidates, receivedAt = null) {
 
   const lower = line.toLowerCase();
   const atMs = findLineTimeMs(line) ?? receivedAt;
+
+  // Numbers in widget text (e.g. 通话时长 00:05) are never coordinates.
+  if (/^finger\d+:/i.test(line.trim())) {
+    const point = line.match(/at Point\(x:\s*(-?\d+(?:\.\d+)?),\s*y:\s*(-?\d+(?:\.\d+)?)\)/i);
+    if (point && /:(?:click|tap|longclick):/i.test(line)) {
+      candidates.push({
+        type: /:longclick:/i.test(line) ? 'long_press' : 'tap',
+        x: Number(point[1]), y: Number(point[2]),
+        ...(/:longclick:/i.test(line) ? { durationMs: 800 } : {}),
+        atMs,
+      });
+    }
+    return;
+  }
 
   const swipeMatch = line.match(/(swipe|drag|fling|滑动)/i);
   const swipeNumbers = swipeMatch
@@ -1348,6 +2153,7 @@ function parseLiveActionTimingMarkers(receivedLines) {
         : previousElapsed;
     const normalized = {
       type: marker.type,
+      harmonyHeader: marker.harmonyHeader,
       delayMs: Math.max(0, Math.round(elapsedMs - previousElapsed)),
     };
     previousElapsed = elapsedMs;
@@ -1363,10 +2169,27 @@ function liveActionMarkerFromLine(line) {
     );
   if (!match) return null;
   const operation = match[1].toLowerCase();
-  if (/^(swipe|fling|drag)$/.test(operation)) return { type: 'swipe' };
-  if (/^long/.test(operation)) return { type: 'long_press' };
-  if (/^input/.test(operation)) return { type: 'input_text' };
-  return { type: 'tap' };
+  const harmonyHeader = /fingerNumber\s*:/i.test(line);
+  if (/^(swipe|fling|drag)$/.test(operation)) {
+    return { type: 'swipe', harmonyHeader };
+  }
+  if (/^long/.test(operation)) return { type: 'long_press', harmonyHeader };
+  if (/^input/.test(operation)) return { type: 'input_text', harmonyHeader };
+  return { type: 'tap', harmonyHeader };
+}
+
+function markersMatchRemotePoints(remoteSteps, receivedLines) {
+  let index = -1;
+  for (const entry of receivedLines) {
+    if (liveActionMarkerFromLine(entry.line)) index += 1;
+    if (!/^\s*finger\d+:/i.test(entry.line)) continue;
+    const candidates = [];
+    parseUiRecordLine(entry.line, candidates);
+    if (!candidates.length) continue;
+    const step = remoteSteps[index];
+    if (!step || candidates.some((point) => point.x !== step.x || point.y !== step.y)) return false;
+  }
+  return true;
 }
 
 function applyLiveTimingMarkers(steps, markers) {
@@ -1807,21 +2630,6 @@ function normalizeLongPressDuration(value) {
   return Math.max(500, duration);
 }
 
-function getScreenScale(source, target) {
-  const sourceWidth = numberFrom(source?.width);
-  const sourceHeight = numberFrom(source?.height);
-  const targetWidth = numberFrom(target?.width);
-  const targetHeight = numberFrom(target?.height);
-  return {
-    x: sourceWidth > 0 && targetWidth > 0 ? targetWidth / sourceWidth : 1,
-    y: sourceHeight > 0 && targetHeight > 0 ? targetHeight / sourceHeight : 1,
-  };
-}
-
-function scaleCoordinate(value, scale) {
-  return Math.round(numberFrom(value) * scale);
-}
-
 async function captureDeviceContext(
   session,
   device,
@@ -1831,6 +2639,8 @@ async function captureDeviceContext(
     parameters = {},
     action = null,
     actionIndex = null,
+    evidenceId = null,
+    eventAtMs = null,
     includeLayout = true,
   } = {},
 ) {
@@ -1879,6 +2689,13 @@ async function captureDeviceContext(
     phase,
     capturedAt: new Date().toISOString(),
     ...(Number.isInteger(actionIndex) ? { actionIndex } : {}),
+    ...(evidenceId ? { evidenceId } : {}),
+    ...(Number.isFinite(Number(eventAtMs))
+      ? {
+          eventAtMs: Number(eventAtMs),
+          captureLatencyMs: Math.max(0, Date.now() - Number(eventAtMs)),
+        }
+      : {}),
     ...(action ? { action: redactSensitiveData(action, sensitiveValues) } : {}),
     focus: redactSensitiveData(focusResult.value, sensitiveValues),
     snapshot,
@@ -1943,10 +2760,17 @@ function summarizeContext(context) {
     phase: context.phase,
     capturedAt: context.capturedAt,
     actionIndex: context.actionIndex ?? null,
+    stepIndex: context.stepIndex ?? null,
+    evidenceId: context.evidenceId || null,
+    eventAtMs: context.eventAtMs ?? null,
+    captureLatencyMs: context.captureLatencyMs ?? null,
     action: context.action || null,
     focus: context.focus,
     text: String(context.snapshot?.text || '').slice(0, 4000),
     values: (context.snapshot?.values || []).slice(0, 100),
+    screenshotFile: context.screenshotFile || null,
+    nativeLayoutFile: context.nativeLayoutFile || null,
+    nativeLayoutSummary: (context.nativeLayoutSummary || []).slice(0, 100),
   };
 }
 
@@ -1959,12 +2783,18 @@ function assessRecordingQuality(session, timeline) {
   };
   const stepCount = session.steps.length;
   const durationMs = elapsedBetween(session.startedAt, session.stoppedAt);
+  const majorContextTransition = hasMajorContextTransition(session.contexts);
 
   if (!stepCount) {
     return {
       level: 'unusable',
       score: 0,
-      issues: ['未记录到可回放动作'],
+      issues: [
+        '未记录到可回放动作',
+        ...(majorContextTransition
+          ? ['检测到界面内容发生明显变化，但录制器没有捕获对应动作']
+          : []),
+      ],
     };
   }
   if (timeline.rejectedStepCount > 0) {
@@ -2003,8 +2833,21 @@ function assessRecordingQuality(session, timeline) {
       20,
     );
   }
-  if (stepCount <= 1 && durationMs >= 2000 && hasMajorContextTransition(session.contexts)) {
+  if (stepCount <= 1 && durationMs >= 2000 && majorContextTransition) {
     addIssue('开始与结束界面发生跳转，但记录动作过少', 20);
+  }
+  if (session.integrityStatus === 'incomplete') {
+    for (const issue of session.integrityIssues || []) {
+      addIssue(issue, 10);
+    }
+  } else if (session.integrityStatus === 'unusable') {
+    addIssue('动作证据完整性不可用', 35);
+  }
+  const slowCaptures = (session.evidenceManifest || []).filter(
+    (entry) => Number(entry.captureLatencyMs) > 2500,
+  ).length;
+  if (slowCaptures > 0) {
+    addIssue(`有 ${slowCaptures} 个动作的界面证据采集延迟过高`, 10);
   }
 
   score = Math.max(0, Math.min(100, score));
@@ -2022,7 +2865,30 @@ function hasMajorContextTransition(contexts) {
     .find((context) => context.phase === 'recording-stop');
   const startFocus = focusIdentity(start?.focus);
   const stopFocus = focusIdentity(stop?.focus);
-  return Boolean(startFocus && stopFocus && startFocus !== stopFocus);
+  if (startFocus && stopFocus && startFocus !== stopFocus) return true;
+
+  const startTokens = contextTextTokens(start);
+  const stopTokens = contextTextTokens(stop);
+  if (startTokens.size < 2 || stopTokens.size < 2) return false;
+  const intersection = [...startTokens].filter((token) => stopTokens.has(token)).length;
+  const union = new Set([...startTokens, ...stopTokens]).size;
+  return union > 0 && intersection / union < 0.35;
+}
+
+function contextTextTokens(context) {
+  const values = context?.snapshot?.values?.length
+    ? context.snapshot.values
+    : String(context?.snapshot?.text || '').split(/\r?\n/);
+  return new Set(
+    values
+      .map((value) => String(value || '').trim())
+      .filter(
+        (value) =>
+          value.length >= 2 &&
+          value.length <= 120 &&
+          !/^[\d\s:：,，.。%]+$/.test(value),
+      ),
+  );
 }
 
 function focusIdentity(focus) {
@@ -2047,9 +2913,90 @@ function elapsedBetween(startedAt, stoppedAt) {
     : 0;
 }
 
+async function startRecordingProcess(session, device) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= RECORDING_START_ATTEMPTS; attempt += 1) {
+    const outputStartIndex = session.outputLines.length;
+    const recorder = await device.startUiRecording({
+      recordWidgetInfo: true,
+      printToConsole: true,
+      saveLayout: true,
+    });
+    if (!recorder?.process) throw new Error('设备没有返回录制进程');
+
+    session.provider = recorder.provider || session.provider;
+    session.serial = recorder.serial || session.serial;
+    session.recordingMode = recorder.mode || 'unknown';
+    session.inputProcess = recorder.process;
+    session.readUiRecording = recorder.readUiRecording || null;
+    session.readUiRecordingLayouts = recorder.readUiRecordingLayouts || null;
+    session.layoutCaptureSupported = Boolean(recorder.readUiRecordingLayouts);
+    session.flushOutput = attachOutput(session, recorder.process, device);
+    try {
+      if (recorder.readyMessage) {
+        await waitForRecordingReady(recorder.process, {
+          readyMessage: recorder.readyMessage,
+          initialOutput: session.outputLines
+            .slice(outputStartIndex)
+            .map((entry) => entry.line)
+            .join('\n'),
+        });
+      }
+      return recorder;
+    } catch (error) {
+      lastError = error;
+      await stopProcess(recorder.process, session.diagnostics);
+      session.flushOutput?.();
+      await session.rawLiveWriteQueue;
+      session.inputProcess = null;
+      session.flushOutput = null;
+      if (!isRecoverableRecordingStartError(error) || attempt >= RECORDING_START_ATTEMPTS) {
+        throw error;
+      }
+      session.diagnostics.push(
+        `HDC 录制启动冲突，已清理残留状态并进行第 ${attempt + 1} 次启动`,
+      );
+      await device.recoverUiRecording?.({ serial: session.serial });
+      await sleep(500);
+    }
+  }
+  throw lastError || new Error('录制启动失败');
+}
+
+function isRecoverableRecordingStartError(error) {
+  return /RET_ERR_CONNECTION_EXIST|can not connect to AAMS|cannot connect to AAMS/i.test(
+    String(error?.message || error || ''),
+  );
+}
+
 function attachOutput(session, child, device) {
   let pendingStdout = '';
   let pendingStderr = '';
+  let pendingHarmonyAction = null;
+  let recentHeaderOnlyAt = null;
+  const detailTiming =
+    session.actionDetailTiming ||
+    (session.actionDetailTiming = createActionDetailTiming());
+  const scheduleCandidate = (candidate) => {
+    const action = sanitizeLiveAction(candidate);
+    session.liveActionEventCount += 1;
+    scheduleActionContext(
+      session,
+      device,
+      action,
+      session.liveActionEventCount,
+      Number(candidate?.atMs) || Date.now(),
+    );
+  };
+  const flushPendingHarmonyAction = (reason = 'timeout') => {
+    if (!pendingHarmonyAction) return;
+    clearTimeout(pendingHarmonyAction.timer);
+    scheduleCandidate(pendingHarmonyAction.marker);
+    detailTiming.headerOnlyCount += 1;
+    detailTiming.lastHeaderOnlyReason = reason;
+    recentHeaderOnlyAt = Date.now();
+    pendingHarmonyAction = null;
+  };
   const handleLine = (source, line) => {
     if (!String(line).trim()) return;
     const receivedAt = Date.now();
@@ -2060,32 +3007,70 @@ function attachOutput(session, child, device) {
     }
 
     session.outputLines.push({ line, at: receivedAt, source });
+    const marker = liveActionMarkerFromLine(line);
+    const isHarmonyHeader = Boolean(marker?.harmonyHeader);
+    if (isHarmonyHeader) {
+      flushPendingHarmonyAction('next_header');
+      const pending = {
+        marker: { ...marker, atMs: receivedAt },
+        atMs: receivedAt,
+        timer: null,
+      };
+      pending.timer = setTimeout(() => {
+        if (pendingHarmonyAction === pending) {
+          flushPendingHarmonyAction('adaptive_timeout');
+        }
+      }, detailTiming.currentWaitMs);
+      pending.timer.unref?.();
+      pendingHarmonyAction = pending;
+      return;
+    }
+    const isHarmonyDetail = /^\s*finger\d+:/i.test(line);
+    if (isHarmonyDetail && pendingHarmonyAction) {
+      const pending = pendingHarmonyAction;
+      clearTimeout(pending.timer);
+      pendingHarmonyAction = null;
+      observeActionDetailTiming(detailTiming, receivedAt - pending.atMs);
+      detailTiming.matchedHeaderCount += 1;
+      scheduleCandidate(
+        parseHarmonyActionDetail(
+          pending.marker,
+          line,
+          pending.atMs,
+        ),
+      );
+      return;
+    }
+    if (isHarmonyDetail) {
+      if (
+        recentHeaderOnlyAt &&
+        receivedAt - recentHeaderOnlyAt <=
+          HARMONY_ACTION_DETAIL_MAX_WAIT_MS * 2
+      ) {
+        detailTiming.lateDetailCount += 1;
+        detailTiming.currentWaitMs = Math.min(
+          HARMONY_ACTION_DETAIL_MAX_WAIT_MS,
+          Math.max(
+            detailTiming.currentWaitMs,
+            Math.round(detailTiming.currentWaitMs * 1.5),
+          ),
+        );
+        return;
+      }
+      detailTiming.orphanDetailCount += 1;
+    }
+
     const firstNewCandidate = session.liveCandidates.length;
     parseJsonLine(String(line).trim(), session.liveCandidates, receivedAt);
     parseUiRecordLine(String(line).trim(), session.liveCandidates, receivedAt);
     parseGeteventLine(String(line).trim(), session.liveCandidates, receivedAt);
     const parsedCandidates = session.liveCandidates.slice(firstNewCandidate);
     if (parsedCandidates.length) {
-      parsedCandidates.forEach((candidate) => {
-        session.liveActionEventCount += 1;
-        scheduleActionContext(
-          session,
-          device,
-          candidate,
-          session.liveActionEventCount,
-        );
-      });
+      parsedCandidates.forEach(scheduleCandidate);
       return;
     }
-    const marker = liveActionMarkerFromLine(line);
     if (marker) {
-      session.liveActionEventCount += 1;
-      scheduleActionContext(
-        session,
-        device,
-        marker,
-        session.liveActionEventCount,
-      );
+      scheduleCandidate(marker);
     }
   };
   const consumeChunk = (source, chunk) => {
@@ -2100,6 +3085,7 @@ function attachOutput(session, child, device) {
     if (pendingStderr.trim()) handleLine('stderr', pendingStderr);
     pendingStdout = '';
     pendingStderr = '';
+    flushPendingHarmonyAction('stream_flush');
   };
 
   child.stdout?.on('data', (chunk) => consumeChunk('stdout', chunk));
@@ -2112,6 +3098,100 @@ function attachOutput(session, child, device) {
     session.diagnostics.push(`recording process error: ${error.message}`);
   });
   return flush;
+}
+
+function createActionDetailTiming() {
+  return {
+    currentWaitMs: HARMONY_ACTION_DETAIL_INITIAL_WAIT_MS,
+    observedGapsMs: [],
+    matchedHeaderCount: 0,
+    headerOnlyCount: 0,
+    lateDetailCount: 0,
+    orphanDetailCount: 0,
+    lastHeaderOnlyReason: null,
+  };
+}
+
+function observeActionDetailTiming(timing, gapMs) {
+  const gap = Math.max(0, Math.round(Number(gapMs) || 0));
+  timing.observedGapsMs = [...(timing.observedGapsMs || []), gap].slice(-20);
+  if (timing.observedGapsMs.length < 3) {
+    timing.currentWaitMs = Math.max(
+      timing.currentWaitMs,
+      HARMONY_ACTION_DETAIL_INITIAL_WAIT_MS,
+    );
+    return;
+  }
+  const sorted = [...timing.observedGapsMs].sort((left, right) => left - right);
+  const percentileIndex = Math.min(
+    sorted.length - 1,
+    Math.floor(sorted.length * 0.9),
+  );
+  const observed = sorted[percentileIndex] || gap;
+  timing.currentWaitMs = Math.max(
+    HARMONY_ACTION_DETAIL_MIN_WAIT_MS,
+    Math.min(
+      HARMONY_ACTION_DETAIL_MAX_WAIT_MS,
+      Math.round(observed * 3 + 40),
+    ),
+  );
+}
+
+function parseHarmonyActionDetail(marker, line, atMs) {
+  const points = [...String(line).matchAll(
+    /Point\(x:\s*(-?\d+(?:\.\d+)?),\s*y:\s*(-?\d+(?:\.\d+)?)\)/gi,
+  )].map((match) => ({ x: Number(match[1]), y: Number(match[2]) }));
+  const widget = parseHarmonyWidgetDetail(line);
+  const action = {
+    type: marker.type,
+    atMs,
+    ...(widget ? { context: { widget } } : {}),
+  };
+  if (marker.type === 'swipe' && points.length >= 2) {
+    return {
+      ...action,
+      x1: points[0].x,
+      y1: points[0].y,
+      x2: points.at(-1).x,
+      y2: points.at(-1).y,
+      durationMs: 300,
+    };
+  }
+  if (
+    new Set(['tap', 'long_press']).has(marker.type) &&
+    points.length
+  ) {
+    return {
+      ...action,
+      x: points[0].x,
+      y: points[0].y,
+      ...(marker.type === 'long_press' ? { durationMs: 800 } : {}),
+    };
+  }
+  return action;
+}
+
+function parseHarmonyWidgetDetail(line) {
+  const match = String(line).match(
+    /at Widget\(\s*id:\s*(.*?),\s*text:\s*(.*?),\s*type:\s*([^)]+)\)/i,
+  );
+  if (!match) return null;
+  const id = match[1].trim();
+  const text = match[2].trim();
+  const type = match[3].trim();
+  if (!id && !text && !type) return null;
+  return {
+    ...(id ? { id } : {}),
+    ...(text ? { text } : {}),
+    ...(type ? { type } : {}),
+  };
+}
+
+function sanitizeLiveAction(candidate) {
+  const action = { ...(candidate || { type: 'tap' }) };
+  delete action.atMs;
+  delete action.harmonyHeader;
+  return action;
 }
 
 function enqueueRawLiveLine(session, source, line, receivedAt) {
@@ -2135,24 +3215,101 @@ function enqueueRawLiveLine(session, source, line, receivedAt) {
     });
 }
 
-function scheduleActionContext(session, device, candidate, actionIndex) {
+function scheduleActionContext(
+  session,
+  device,
+  candidate,
+  actionIndex,
+  eventAtMs,
+) {
   const action = { ...candidate };
   delete action.atMs;
+  const evidenceId = `action-${String(actionIndex).padStart(3, '0')}`;
   session.actionContextQueue = session.actionContextQueue
     .then(() =>
-      captureDeviceContext(session, device, `action-${String(actionIndex).padStart(3, '0')}`, {
-        parameterSchema: session.parameterSchema,
-        parameters: session.runtimeParameters,
-        action,
-        actionIndex,
-        includeLayout: session.provider !== 'hdc',
-      }),
+      captureDeviceContext(
+        session,
+        device,
+        evidenceId,
+        {
+          parameterSchema: session.parameterSchema,
+          parameters: session.runtimeParameters,
+          action,
+          actionIndex,
+          evidenceId,
+          eventAtMs,
+          includeLayout: session.provider !== 'hdc',
+        },
+      ),
     )
     .catch((error) => {
       session.diagnostics.push(
         `action-${String(actionIndex).padStart(3, '0')} context capture failed: ${error.message}`,
       );
     });
+}
+
+function reconcileActionContexts(contexts, steps, recordedLayouts = []) {
+  const actionContexts = (contexts || [])
+    .filter((context) => Number.isInteger(context.actionIndex))
+    .sort((left, right) => left.actionIndex - right.actionIndex);
+  const layoutsByIndex = new Map(
+    (recordedLayouts || []).map((layout) => [layout.actionIndex, layout]),
+  );
+  let stepCursor = 0;
+
+  for (const context of actionContexts) {
+    const nativeLayout = layoutsByIndex.get(context.actionIndex);
+    if (nativeLayout) {
+      context.nativeLayoutFile = nativeLayout.localFile;
+      context.nativeLayoutSummary = clone(nativeLayout.summary || []);
+      if (nativeLayout.error) context.nativeLayoutError = nativeLayout.error;
+    }
+
+    let matchedIndex = -1;
+    for (let index = stepCursor; index < steps.length; index += 1) {
+      if (actionContextMatchesStep(context.action, steps[index])) {
+        matchedIndex = index;
+        break;
+      }
+    }
+    if (matchedIndex < 0 && actionContexts.length === steps.length) {
+      matchedIndex = Math.min(context.actionIndex - 1, steps.length - 1);
+    }
+    if (matchedIndex < 0) continue;
+
+    const recordedStep = clone(steps[matchedIndex]);
+    const observedAction = context.action ? clone(context.action) : null;
+    if (
+      observedAction &&
+      JSON.stringify(observedAction) !== JSON.stringify(recordedStep)
+    ) {
+      context.observedAction = observedAction;
+    }
+    context.action = recordedStep;
+    context.stepIndex = matchedIndex + 1;
+    context.evidenceId = `step-${String(matchedIndex + 1).padStart(3, '0')}`;
+    stepCursor = matchedIndex + 1;
+  }
+}
+
+function actionContextMatchesStep(action, step) {
+  if (!action || !step || !areCompatibleActionTypes(action.type, step.type)) {
+    return false;
+  }
+  if (
+    new Set(['tap', 'long_press']).has(action.type) &&
+    [action.x, action.y, step.x, step.y].every(Number.isFinite)
+  ) {
+    return pointsWithin(action.x, action.y, step.x, step.y, 24);
+  }
+  if (
+    action.type === 'swipe' &&
+    [action.x1, action.y1, step.x1, step.y1].every(Number.isFinite)
+  ) {
+    return pointsWithin(action.x1, action.y1, step.x1, step.y1, 32);
+  }
+  return true;
 }
 
 async function stopProcess(child, diagnostics) {
@@ -2325,6 +3482,94 @@ function allValidationChecksPassed(checks) {
     Array.isArray(checks) &&
     checks.length > 0 &&
     checks.every((check) => check?.status === 'passed')
+  );
+}
+
+function emptyReplayStats() {
+  return {
+    attempts: 0,
+    passed: 0,
+    failed: 0,
+    successRate: null,
+    recoveredAttempts: 0,
+    lastStatus: null,
+    lastReplayAt: null,
+  };
+}
+
+function normalizeReplayStats(stats, history = []) {
+  if (!stats || typeof stats !== 'object') {
+    return calculateReplayStats(history);
+  }
+  const attempts = Math.max(0, Number(stats.attempts) || 0);
+  const passed = Math.max(0, Number(stats.passed) || 0);
+  const failed = Math.max(0, Number(stats.failed) || Math.max(0, attempts - passed));
+  return {
+    attempts,
+    passed,
+    failed,
+    successRate: attempts ? passed / attempts : null,
+    recoveredAttempts: Math.max(0, Number(stats.recoveredAttempts) || 0),
+    lastStatus: stats.lastStatus || null,
+    lastReplayAt: stats.lastReplayAt || null,
+  };
+}
+
+function finishReplayAttempt(
+  session,
+  attempt,
+  { status, finishedAt, error = null },
+) {
+  if (attempt.finishedAt) return;
+  attempt.status = status;
+  attempt.finishedAt = finishedAt;
+  attempt.error = error;
+  attempt.durationMs = Math.max(
+    0,
+    Date.parse(finishedAt) - Date.parse(attempt.startedAt),
+  );
+  session.replayHistory = [
+    ...(session.replayHistory || []),
+    clone(attempt),
+  ].slice(-50);
+  session.replayStats = calculateReplayStats(session.replayHistory);
+}
+
+function calculateReplayStats(history = []) {
+  const attempts = Array.isArray(history) ? history.length : 0;
+  const passed = (history || []).filter((attempt) => attempt.status === 'passed').length;
+  const failed = (history || []).filter((attempt) => attempt.status === 'failed').length;
+  const recoveredAttempts = (history || []).filter(
+    (attempt) => Number(attempt.recoveryCount) > 0,
+  ).length;
+  const last = attempts ? history[attempts - 1] : null;
+  return {
+    attempts,
+    passed,
+    failed,
+    successRate: attempts ? passed / attempts : null,
+    recoveredAttempts,
+    lastStatus: last?.status || null,
+    lastReplayAt: last?.finishedAt || null,
+  };
+}
+
+function workflowUsesStrictSkill(workflowId) {
+  return (
+    workflowId === TENCENT_QUICK_MEETING_WORKFLOW_ID ||
+    workflowId === WECHAT_MEDIA_WORKFLOW_ID ||
+    isWechatVoipWorkflowId(workflowId) ||
+    workflowId === KUAISHOU_LIVE_WORKFLOW_ID
+  );
+}
+
+function executionTimestamp(session) {
+  return String(
+    session?.validatedAt ||
+      session?.replayFinishedAt ||
+      session?.stoppedAt ||
+      session?.startedAt ||
+      '',
   );
 }
 

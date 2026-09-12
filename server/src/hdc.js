@@ -26,6 +26,7 @@ function execHdc(hdcPath, args, options = {}) {
         encoding: options.encoding ?? 'utf8',
         timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: options.maxBuffer ?? 20 * 1024 * 1024,
+        windowsHide: true,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -115,6 +116,9 @@ export function parseBundleLaunchInfo(output) {
 }
 
 export function parseHarmonyForeground(output, apps = []) {
+  const compatibilityFocus = parseHarmonyCompatibilityForeground(output, apps);
+  if (compatibilityFocus) return compatibilityFocus;
+
   const records = splitHarmonyAbilityRecords(output);
 
   for (const record of records) {
@@ -138,6 +142,42 @@ export function parseHarmonyForeground(output, apps = []) {
       packageName: app?.packageName || bundleName,
       bundleName,
       activity,
+      raw: record.trim(),
+    };
+  }
+
+  return null;
+}
+
+function parseHarmonyCompatibilityForeground(output, apps = []) {
+  const records = splitHarmonyMissionRecords(output);
+
+  for (const record of records) {
+    if (!/^\s*state\s+#FOREGROUND\b/im.test(record)) continue;
+
+    const mission = record.match(
+      /mission\s+name\s+#\[#([^:\]\s]+):([^:\]\s]+):([^\]\s]+)\]/i,
+    );
+    if (!mission) continue;
+
+    const packageName = mission[1].trim();
+    const moduleName = mission[2].trim();
+    const activity = mission[3].trim();
+    const hostBundleName =
+      matchBracketValue(record, /^\s*bundle\s+name\s*\[([^\]]+)\]/im) ||
+      matchLineValue(record, /^\s*bundle(?:Name)?\s*[:=]\s*([^\s]+)/im);
+    const app = apps.find((candidate) => candidate.packageName === packageName);
+    const compatibilityMode =
+      app?.harmonyLaunch?.compatibility || hostBundleName === 'com.huawei.shell_assistant';
+    if (!compatibilityMode) continue;
+
+    return {
+      packageName: app?.packageName || packageName,
+      bundleName: app?.harmonyBundleName || packageName,
+      moduleName,
+      activity,
+      hostBundleName,
+      compatibility: true,
       raw: record.trim(),
     };
   }
@@ -239,6 +279,68 @@ export function createSerialTaskQueue() {
   };
 }
 
+export function buildHdcUiRecordArgs(
+  targetSerial,
+  {
+    recordWidgetInfo = false,
+    printToConsole = true,
+    saveLayout = true,
+  } = {},
+) {
+  return [
+    '-t',
+    targetSerial,
+    'shell',
+    'uitest',
+    'uiRecord',
+    'record',
+    '-W',
+    String(Boolean(recordWidgetInfo)),
+    ...(saveLayout ? ['-l'] : []),
+    '-c',
+    String(Boolean(printToConsole)),
+  ];
+}
+
+export function parseUiRecordingLayoutPaths(output) {
+  const paths = new Set();
+  const addPath = (value) => {
+    const path = String(value || '').trim();
+    if (
+      path &&
+      path.startsWith('/data/') &&
+      !path.includes('..') &&
+      (/\.(?:json|xml)$/i.test(path) || /layout/i.test(path))
+    ) {
+      paths.add(path);
+    }
+  };
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, entry] of Object.entries(value)) {
+      if (/^(?:FILEPAHT|FILEPATH|filePath|layoutPath)$/i.test(key)) addPath(entry);
+      else if (entry && typeof entry === 'object') visit(entry);
+    }
+  };
+
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      visit(JSON.parse(trimmed));
+    } catch {
+      for (const match of trimmed.matchAll(/(\/data\/[^\s"',]+\.(?:json|xml))/gi)) {
+        addPath(match[1]);
+      }
+    }
+  }
+  return [...paths];
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -253,6 +355,7 @@ export function createHdcAdapter({
   const runUiLayoutExclusive = createSerialTaskQueue();
   const configuredSerial = String(serial || '').trim();
   let sessionSerial = '';
+  let activeUiRecorder = null;
 
   async function listTargets() {
     const { stdout } = await execHdc(hdcPath, ['list', 'targets', '-v']);
@@ -357,10 +460,19 @@ export function createHdcAdapter({
   }
 
   async function getInstalledPackages() {
-    return hdcText(['shell', 'bm', 'dump', '-a'], {
+    const nativePackages = await hdcText(['shell', 'bm', 'dump', '-a'], {
       timeoutMs: 30000,
       maxBuffer: 50 * 1024 * 1024,
     });
+    if (!apps.some((app) => app.harmonyLaunch?.compatibility)) {
+      return nativePackages;
+    }
+
+    const compatibilityMissions = await hdcText(['shell', 'aa', 'dump', '-l'], {
+      timeoutMs: 10000,
+      maxBuffer: 10 * 1024 * 1024,
+    }).catch(() => '');
+    return [nativePackages, compatibilityMissions].filter(Boolean).join('\n');
   }
 
   async function getCurrentFocus(targetSerial) {
@@ -371,30 +483,35 @@ export function createHdcAdapter({
     return parseHarmonyForeground(output, apps);
   }
 
-  function getUiLayout(targetSerial) {
-    return runUiLayoutExclusive(() => readUiLayout(targetSerial));
+  function getUiLayout(targetSerial, options = {}) {
+    return runUiLayoutExclusive(() => readUiLayout(targetSerial, options));
   }
 
-  async function readUiLayout(targetSerial) {
+  async function readUiLayout(
+    targetSerial,
+    { attempts = UI_LAYOUT_ATTEMPTS, timeoutMs = 15000 } = {},
+  ) {
     const localRoot = await mkdtemp(join(tmpdir(), 'android-controller-hdc-'));
     const localFile = join(localRoot, 'layout.json');
+    const maxAttempts = Math.max(1, Math.min(3, Number(attempts) || 1));
+    const commandTimeoutMs = Math.max(1000, Number(timeoutMs) || 15000);
     try {
       let lastError = null;
-      for (let attempt = 1; attempt <= UI_LAYOUT_ATTEMPTS; attempt += 1) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           await hdcText(['shell', 'uitest', 'dumpLayout', '-p', remoteLayoutFile], {
             serial: targetSerial,
-            timeoutMs: 15000,
+            timeoutMs: commandTimeoutMs,
           });
           await targetCommand(['file', 'recv', remoteLayoutFile, localFile], {
             serial: targetSerial,
-            timeoutMs: 15000,
+            timeoutMs: commandTimeoutMs,
             maxBuffer: 5 * 1024 * 1024,
           });
           return parseHarmonyLayout(await readFile(localFile, 'utf8'));
         } catch (error) {
           lastError = error;
-          if (attempt < UI_LAYOUT_ATTEMPTS) {
+          if (attempt < maxAttempts) {
             await wait(UI_LAYOUT_RETRY_DELAY_MS);
           }
         }
@@ -445,31 +562,64 @@ export function createHdcAdapter({
   async function startUiRecording({
     recordWidgetInfo = false,
     printToConsole = true,
+    saveLayout = true,
   } = {}) {
     const targetSerial = await resolveSerial();
-    const args = [
-      '-t',
-      targetSerial,
-      'shell',
-      'uitest',
-      'uiRecord',
-      'record',
-      '-W',
-      String(Boolean(recordWidgetInfo)),
-      '-c',
-      String(Boolean(printToConsole)),
-    ];
+    await stopActiveUiRecorder();
+    const args = buildHdcUiRecordArgs(targetSerial, {
+      recordWidgetInfo,
+      printToConsole,
+      saveLayout,
+    });
     const child = spawn(hdcPath, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+    });
+    activeUiRecorder = child;
+    child.once('close', () => {
+      if (activeUiRecorder === child) activeUiRecorder = null;
     });
     return {
       process: child,
       provider: 'hdc',
       serial: targetSerial,
       mode: 'uitest-uiRecord',
+      readyMessage: 'Started Recording Successfully',
       readUiRecording: (options = {}) => readUiRecording({ serial: targetSerial, ...options }),
+      readUiRecordingLayouts: (output, options = {}) =>
+        readUiRecordingLayouts(output, { serial: targetSerial, ...options }),
     };
+  }
+
+  async function recoverUiRecording({ serial: targetSerial } = {}) {
+    await stopActiveUiRecorder();
+    await readUiRecording({ serial: targetSerial, timeoutMs: 3000 }).catch(() => '');
+    await wait(300);
+  }
+
+  async function stopActiveUiRecorder() {
+    const child = activeUiRecorder;
+    if (!child || child.exitCode !== null) return;
+    try {
+      child.stdin?.write('\u0003');
+    } catch {
+      // The process may already be closing.
+    }
+    try {
+      child.kill('SIGINT');
+    } catch {
+      // The process may already be closing.
+    }
+    await waitForChildExit(child, 1000);
+    if (activeUiRecorder === child && child.exitCode === null) {
+      try {
+        child.kill();
+      } catch {
+        // The process may already be closing.
+      }
+      await waitForChildExit(child, 500);
+    }
+    if (activeUiRecorder === child) activeUiRecorder = null;
   }
 
   async function readUiRecording({ serial: targetSerial, timeoutMs = 15000 } = {}) {
@@ -480,9 +630,49 @@ export function createHdcAdapter({
     });
   }
 
+  async function readUiRecordingLayouts(
+    output,
+    { serial: targetSerial, outputDir } = {},
+  ) {
+    if (!outputDir) return [];
+    const remotePaths = parseUiRecordingLayoutPaths(output);
+    const layouts = [];
+    for (const [index, remoteFile] of remotePaths.entries()) {
+      const actionIndex = layoutActionIndex(remoteFile, index + 1);
+      const extension = remoteFile.toLowerCase().endsWith('.xml') ? 'xml' : 'json';
+      const localFile = join(
+        outputDir,
+        `action-layout-${String(actionIndex).padStart(3, '0')}.${extension}`,
+      );
+      try {
+        await targetCommand(['file', 'recv', remoteFile, localFile], {
+          serial: targetSerial,
+          timeoutMs: 15000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        const content = await readFile(localFile, 'utf8');
+        layouts.push({
+          actionIndex,
+          remoteFile,
+          localFile,
+          summary: summarizeRecordedLayout(content),
+        });
+      } catch (error) {
+        layouts.push({
+          actionIndex,
+          remoteFile,
+          localFile: null,
+          summary: [],
+          error: error.message,
+        });
+      }
+    }
+    return layouts;
+  }
+
   async function launchPackage(packageName) {
-    const { bundleName } = bundleForPackage(packageName);
-    const launchInfo = await getLaunchInfo(bundleName);
+    const { app, bundleName } = bundleForPackage(packageName);
+    const launchInfo = await resolveLaunchInfo(app, bundleName);
     if (!launchInfo) {
       throw new Error(`无法从 bm dump 获取鸿蒙应用 ${bundleName} 的启动 Ability`);
     }
@@ -510,13 +700,23 @@ export function createHdcAdapter({
     return parseBundleLaunchInfo(output);
   }
 
+  async function resolveLaunchInfo(app, bundleName) {
+    const nativeLaunch = await getLaunchInfo(bundleName).catch(() => null);
+    if (nativeLaunch) return nativeLaunch;
+
+    const configured = app?.harmonyLaunch;
+    const moduleName = String(configured?.moduleName || '').trim();
+    const abilityName = String(configured?.abilityName || '').trim();
+    return moduleName && abilityName ? { moduleName, abilityName } : null;
+  }
+
   async function startActivity({ packageName, activityName }) {
     if (!packageName || !activityName) {
       throw new Error('startActivity requires packageName and activityName');
     }
 
-    const { bundleName } = bundleForPackage(packageName);
-    const launchInfo = await getLaunchInfo(bundleName);
+    const { app, bundleName } = bundleForPackage(packageName);
+    const launchInfo = await resolveLaunchInfo(app, bundleName);
     if (!launchInfo) {
       throw new Error(`无法从 bm dump 获取鸿蒙应用 ${bundleName} 的启动 Ability`);
     }
@@ -546,6 +746,14 @@ export function createHdcAdapter({
     return hdcText(['shell', 'aa', 'force-stop', bundleName], { timeoutMs: 15000 });
   }
 
+  async function uninstallPackage(packageName) {
+    if (!packageName) throw new Error('uninstallPackage requires packageName');
+    const { bundleName } = bundleForPackage(packageName);
+    return hdcText(['shell', 'bm', 'uninstall', '-n', bundleName], {
+      timeoutMs: 30000,
+    });
+  }
+
   async function keyevent(code) {
     return hdcText(['shell', 'uitest', 'uiInput', 'keyEvent', mapHarmonyKeyEvent(code)]);
   }
@@ -567,14 +775,19 @@ export function createHdcAdapter({
     ]);
   }
 
-  async function tap({ x, y }) {
+  async function tap({ x, y, centerX, centerY }) {
+    const resolvedX = Number(x ?? centerX);
+    const resolvedY = Number(y ?? centerY);
+    if (!Number.isFinite(resolvedX) || !Number.isFinite(resolvedY)) {
+      throw new Error('tap requires finite x/y coordinates');
+    }
     return hdcText([
       'shell',
       'uitest',
       'uiInput',
       'click',
-      String(Math.round(x)),
-      String(Math.round(y)),
+      String(Math.round(resolvedX)),
+      String(Math.round(resolvedY)),
     ]);
   }
 
@@ -652,23 +865,17 @@ export function createHdcAdapter({
     ids = [],
     keys = [],
     clickable,
+    region,
     layout: providedLayout,
   } = {}) {
     const layout = providedLayout || (await getUiLayout());
-    const candidates = flattenHarmonyLayout(layout);
-    const expectedTypes = normalizeExpectedValues(types);
-    const expectedIds = normalizeExpectedValues(ids);
-    const expectedKeys = normalizeExpectedValues(keys);
-
-    return candidates.find((node) => {
-      const attrs = node.attributes;
-      if (expectedTypes.length && !matchesExpectedValue(attrs.type, expectedTypes)) return false;
-      if (expectedIds.length && !matchesExpectedValue(attrs.id, expectedIds)) return false;
-      if (expectedKeys.length && !matchesExpectedValue(attrs.key, expectedKeys)) return false;
-      const actualClickable = attrs.clickable === true || String(attrs.clickable) === 'true';
-      if (typeof clickable === 'boolean' && actualClickable !== clickable) return false;
-      return true;
-    }) || null;
+    return findHarmonyUiNodeInLayout(layout, {
+      types,
+      ids,
+      keys,
+      clickable,
+      region,
+    });
   }
 
   async function findTextNode(texts, { partial = false, region } = {}) {
@@ -770,8 +977,12 @@ export function createHdcAdapter({
     return '';
   }
 
-  async function getUiTextSnapshot() {
-    const layout = await getUiLayout();
+  async function getUiTextSnapshot(options = {}) {
+    const request =
+      options && typeof options === 'object' && !Array.isArray(options)
+        ? options
+        : {};
+    const layout = await getUiLayout(request.serial, request);
     const values = [];
     for (const node of flattenHarmonyLayout(layout)) {
       for (const value of node.textValues) {
@@ -816,9 +1027,11 @@ export function createHdcAdapter({
     getDisplayOrientation,
     getMediaPlaybackState,
     forceStopPackage,
+    uninstallPackage,
     launchPackage,
     startUiRecording,
     readUiRecording,
+    recoverUiRecording,
     startActivity,
     keyevent,
     openUri,
@@ -838,6 +1051,117 @@ export function createHdcAdapter({
     screenshotPng,
     setTargetSerial,
   };
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off?.('exit', onExit);
+      child.off?.('close', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once?.('exit', onExit);
+    child.once?.('close', onExit);
+  });
+}
+
+function summarizeRecordedLayout(output) {
+  try {
+    return flattenHarmonyLayout(parseHarmonyLayout(output))
+      .map((node) => ({
+        text: node.textValues[0] || '',
+        id: String(
+          node.attributes.id ||
+          node.attributes.resourceId ||
+          node.attributes.key ||
+          '',
+        ),
+        type: String(
+          node.attributes.type ||
+          node.attributes.className ||
+          node.attributes.componentType ||
+          '',
+        ),
+        bounds: node.bounds,
+      }))
+      .filter((node) => node.text || node.id || node.type)
+      .slice(0, 100);
+  } catch {
+    return [];
+  }
+}
+
+export function findHarmonyUiNodeInLayout(
+  layout,
+  {
+    types = [],
+    ids = [],
+    keys = [],
+    clickable,
+    region,
+  } = {},
+) {
+  const candidates = flattenHarmonyLayout(layout);
+  const expectedTypes = normalizeExpectedValues(types);
+  const expectedIds = normalizeExpectedValues(ids);
+  const expectedKeys = normalizeExpectedValues(keys);
+
+  return candidates.find((node) => {
+    const attrs = node.attributes;
+    if (
+      expectedTypes.length &&
+      ![attrs.type, attrs.className, attrs.componentType].some((value) =>
+        matchesExpectedValue(value, expectedTypes),
+      )
+    ) {
+      return false;
+    }
+    if (
+      expectedIds.length &&
+      ![attrs.id, attrs.resourceId, attrs.accessibilityId].some((value) =>
+        matchesExpectedValue(value, expectedIds),
+      )
+    ) {
+      return false;
+    }
+    if (expectedKeys.length && !matchesExpectedValue(attrs.key, expectedKeys)) {
+      return false;
+    }
+    const actualClickable =
+      attrs.clickable === true || String(attrs.clickable) === 'true';
+    if (typeof clickable === 'boolean' && actualClickable !== clickable) {
+      return false;
+    }
+    if (region && !isPointInRegion(node.centerX, node.centerY, region)) {
+      return false;
+    }
+    return true;
+  }) || null;
+}
+
+export function layoutActionIndex(path, fallback) {
+  const source = String(path || '');
+  const trailingAction = source.match(
+    /(?:^|[_-])(\d+)\.(?:json|xml)$/i,
+  );
+  const trailingCandidate = Number(trailingAction?.[1]);
+  if (Number.isInteger(trailingCandidate) && trailingCandidate > 0) {
+    return trailingCandidate;
+  }
+  const matches = [
+    ...source.matchAll(
+      /(?:action|step|layout)[_-]?(?:action[_-]?)?(\d+)(?=\D|$)/gi,
+    ),
+  ];
+  const candidate = Number(matches.at(-1)?.[1]);
+  return Number.isInteger(candidate) && candidate > 0 ? candidate : fallback;
 }
 
 function normalizeExpectedValues(values) {
@@ -869,6 +1193,18 @@ function splitHarmonyAbilityRecords(output) {
   const source = String(output || '');
   const matches = [...source.matchAll(/^\s*AbilityRecord\b[^\r\n]*/gim)];
   if (!matches.length) return [source];
+
+  return matches.map((match, index) => {
+    const start = match.index;
+    const end = matches[index + 1]?.index ?? source.length;
+    return source.slice(start, end);
+  });
+}
+
+function splitHarmonyMissionRecords(output) {
+  const source = String(output || '');
+  const matches = [...source.matchAll(/^\s*Mission ID #\d+[^\r\n]*/gim)];
+  if (!matches.length) return [];
 
   return matches.map((match, index) => {
     const start = match.index;

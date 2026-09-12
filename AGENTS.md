@@ -34,7 +34,7 @@ chcp 65001 > $null
 - `server/src/skills/`: executable business logic; prefer existing device-controller methods.
 - Coordinates must carry normalized values or a `referenceScreen` so other resolutions scale.
 - Start capture only after the target app/business state has been reached and checked.
-- A workflow becomes verified only after successful replay; task completion alone is insufficient.
+- A workflow may become verified after the agent successfully tests its business flow on a real device, or after successful recorded replay; task completion alone without business-state validation is insufficient.
 - VoIP workflows are separate `audio-call` and `video-call` entries and use the first contact.
 
 ## Safety And Local Data
@@ -50,4 +50,4 @@ chcp 65001 > $null
 - Quick-task categories come from the workflow registry; long video and navigation stay hidden there.
 - Free-text parsing still supports implemented long-video and AMap skills.
 - Recorded trajectories replay from the recording panel; they are not generic TaskManager skills.
-- New app/workflow functions remain gray until the user records and successfully replays them.
+- New app/workflow functions remain gray until real-device business-flow testing or recorded replay succeeds. The agent may then enable the shortcut without requiring the user to record it first.

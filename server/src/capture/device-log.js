@@ -82,7 +82,12 @@ export function pullDevicePortLog({
     execFile(
       executable,
       args,
-      { encoding: 'utf8', timeout: 30000, maxBuffer: 5 * 1024 * 1024 },
+      {
+        encoding: 'utf8',
+        timeout: 30000,
+        maxBuffer: 5 * 1024 * 1024,
+        windowsHide: true,
+      },
       (error, stdout, stderr) => {
         if (error) {
           error.stdout = stdout;

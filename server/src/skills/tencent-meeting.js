@@ -7,12 +7,19 @@ const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 const WAIT_CHUNK_MS = 60 * 1000;
 
 const DEFAULT_TIMINGS = {
+  afterOverlayDismissMs: 300,
   afterStopMs: 500,
   afterLaunchMs: 2500,
+  afterRecoveryDismissMs: 500,
   afterQuickMeetingTapMs: 1200,
+  afterJoinMeetingTapMs: 1200,
+  afterMeetingIdInputMs: 500,
+  afterPasswordInputMs: 500,
   afterCameraTapMs: 500,
   afterEnterMeetingMs: 1800,
-  stateTimeoutMs: 15000,
+  afterPermissionChoiceMs: 300,
+  afterPermissionConfirmMs: 1000,
+  stateTimeoutMs: 30000,
   pollIntervalMs: 300,
   shareStepDelayMs: 700,
   shareDialogTimeoutMs: 2000,
@@ -23,6 +30,8 @@ const DEFAULT_TIMINGS = {
 
 export const TENCENT_QUICK_MEETING_WORKFLOW_ID =
   'meeting:tencent-meeting:quick-meeting';
+export const TENCENT_JOIN_MEETING_WORKFLOW_ID =
+  'meeting:tencent-meeting:join-meeting';
 
 export function durationParameterToMs(
   value,
@@ -206,16 +215,33 @@ export function inspectTencentShareStatusPng(png) {
   }
 }
 
-export async function executeTencentQuickMeeting({
+export function executeTencentQuickMeeting(options = {}) {
+  return executeTencentMeeting({
+    ...options,
+    meetingMode: 'quick',
+  });
+}
+
+export function executeTencentJoinMeeting(options = {}) {
+  return executeTencentMeeting({
+    ...options,
+    meetingMode: 'join',
+  });
+}
+
+async function executeTencentMeeting({
   device,
   app,
   parameters = {},
   recordedSteps = [],
   sourceScreen = null,
   executeStep,
+  startCapture = null,
   onStep = () => {},
+  onStatus = () => {},
   sleep = delay,
   timings = {},
+  meetingMode = 'quick',
 } = {}) {
   if (!device || !app?.packageName) {
     throw new Error('腾讯会议执行器缺少设备或应用配置');
@@ -225,6 +251,15 @@ export async function executeTencentQuickMeeting({
   }
 
   const checks = [];
+  const joiningMeeting = meetingMode === 'join';
+  const validationMode = joiningMeeting
+    ? 'tencent_join_meeting_v1'
+    : 'tencent_quick_meeting_v1';
+  const meetingId = normalizeMeetingId(parameters.meetingId);
+  const meetingPassword = String(parameters.meetingPassword || '').trim();
+  if (joiningMeeting && !meetingId) {
+    throw new Error('腾讯会议加入会议缺少有效会议号');
+  }
   const effectiveDurationMs = durationParameterToMs(parameters.duration);
   const desiredCamera = Boolean(parameters.camera);
   const desiredShareScreen = Boolean(parameters.shareScreen);
@@ -251,11 +286,13 @@ export async function executeTencentQuickMeeting({
       fail(
         'harmony_device',
         '鸿蒙设备',
-        '腾讯会议快速会议专用回放当前仅支持 HDC 鸿蒙设备',
+        `腾讯会议${joiningMeeting ? '加入会议' : '快速会议'}专用回放当前仅支持 HDC 鸿蒙设备`,
       );
     }
     pass('device_connected', '设备连接', status.serial || 'HDC');
 
+    await device.keyevent('KEYCODE_BACK').catch(() => {});
+    await sleep(waits.afterOverlayDismissMs);
     await device.forceStopPackage(app.packageName);
     await sleep(waits.afterStopMs);
     await device.launchPackage(app.packageName);
@@ -283,36 +320,59 @@ export async function executeTencentQuickMeeting({
       DEFAULT_SCREEN;
     const size = normalizeScreen(targetScreen);
     activeScreen = size;
-    const homeSnapshot = await waitForValue(
-      () => device.getUiTextSnapshot(),
-      (snapshot) =>
-        snapshot &&
-        snapshot.text.includes('快速会议') &&
-        snapshot.text.includes('加入会议'),
+    const homeSnapshot = await waitForTencentHome({
+      device,
+      app,
       waits,
       sleep,
-    );
+    });
     if (!homeSnapshot) {
       fail(
-        'quick_meeting_setup',
-        '进入快速会议设置',
-        '腾讯会议启动后未检测到首页“快速会议”入口',
+        joiningMeeting ? 'join_meeting_setup' : 'quick_meeting_setup',
+        joiningMeeting ? '进入加入会议设置' : '进入快速会议设置',
+        `腾讯会议启动后未检测到首页“${joiningMeeting ? '加入会议' : '快速会议'}”入口`,
       );
     }
 
+    const setupCheckId = joiningMeeting
+      ? 'join_meeting_setup'
+      : 'quick_meeting_setup';
+    const setupCheckLabel = joiningMeeting
+      ? '进入加入会议设置'
+      : '进入快速会议设置';
+    const entryText = joiningMeeting ? '加入会议' : '快速会议';
+    const entryNode = findTextNode(homeSnapshot.layout, [entryText]);
+    const entryPoint = entryNode
+      ? {
+          x: Math.round(
+            (entryNode.bounds.x1 + entryNode.bounds.x2) / 2,
+          ),
+          y: Math.round(
+            (entryNode.bounds.y1 + entryNode.bounds.y2) / 2,
+          ),
+        }
+      : {
+          x: Math.round(
+            size.width *
+              ((joiningMeeting ? 182 : 480) / DEFAULT_SCREEN.width),
+          ),
+          y: Math.round(size.height * (680 / DEFAULT_SCREEN.height)),
+        };
     let setupSnapshot = null;
     for (let attempt = 0; attempt < 3 && !setupSnapshot; attempt += 1) {
-      await device.tap({
-        x: Math.round(size.width * (480 / DEFAULT_SCREEN.width)),
-        y: Math.round(size.height * (520 / DEFAULT_SCREEN.height)),
-      });
-      await sleep(waits.afterQuickMeetingTapMs);
+      await device.tap(entryPoint);
+      await sleep(
+        joiningMeeting
+          ? waits.afterJoinMeetingTapMs
+          : waits.afterQuickMeetingTapMs,
+      );
       setupSnapshot = await waitForValue(
         () => device.getUiTextSnapshot(),
         (snapshot) =>
           snapshot &&
-          snapshot.text.includes('开启视频') &&
-          snapshot.text.includes('进入会议'),
+          (joiningMeeting
+            ? isTencentJoinSetupSnapshot(snapshot)
+            : isTencentQuickSetupSnapshot(snapshot)),
         {
           ...waits,
           stateTimeoutMs: Math.min(waits.stateTimeoutMs, 2500),
@@ -322,12 +382,51 @@ export async function executeTencentQuickMeeting({
     }
     if (!setupSnapshot) {
       fail(
-        'quick_meeting_setup',
-        '进入快速会议设置',
-        '点击“快速会议”后未检测到“开启视频”和“进入会议”设置页',
+        setupCheckId,
+        setupCheckLabel,
+        joiningMeeting
+          ? '点击“加入会议”后未检测到会议号设置页'
+          : '点击“快速会议”后未检测到“开启视频”和“进入会议”设置页',
       );
     }
-    pass('quick_meeting_setup', '进入快速会议设置');
+    pass(setupCheckId, setupCheckLabel);
+
+    if (joiningMeeting) {
+      const meetingIdInput = findTencentMeetingIdInput(
+        setupSnapshot.layout,
+        size,
+      );
+      if (!meetingIdInput) {
+        fail(
+          'meeting_id_entered',
+          '输入会议号',
+          '加入会议设置页未找到会议号输入框',
+        );
+      }
+      await device.inputText(meetingId, {
+        clearExisting: true,
+        x: meetingIdInput.x,
+        y: meetingIdInput.y,
+      });
+      await sleep(waits.afterMeetingIdInputMs);
+      setupSnapshot = await waitForValue(
+        () => device.getUiTextSnapshot(),
+        (snapshot) =>
+          snapshot &&
+          isTencentJoinSetupSnapshot(snapshot) &&
+          snapshotContainsMeetingId(snapshot, meetingId),
+        waits,
+        sleep,
+      );
+      if (!setupSnapshot) {
+        fail(
+          'meeting_id_entered',
+          '输入会议号',
+          `会议号 ${meetingId} 未写入腾讯会议输入框`,
+        );
+      }
+      pass('meeting_id_entered', '输入会议号', meetingId);
+    }
 
     let camera = inspectTencentCameraToggle(setupSnapshot.layout, size);
     if (!camera) {
@@ -340,6 +439,11 @@ export async function executeTencentQuickMeeting({
     if (camera.enabled !== desiredCamera) {
       await device.tap({ x: camera.x, y: camera.y });
       await sleep(waits.afterCameraTapMs);
+      await handleTencentPermissionSnapshot({
+        device,
+        waits,
+        sleep,
+      });
       setupSnapshot = await device.getUiTextSnapshot();
       camera = inspectTencentCameraToggle(setupSnapshot.layout, size);
     }
@@ -356,9 +460,16 @@ export async function executeTencentQuickMeeting({
       desiredCamera ? '已开启' : '已关闭',
     );
 
-    const enterNode = findTextNode(setupSnapshot.layout, ['进入会议']);
+    const enterLabel = joiningMeeting ? '加入会议' : '进入会议';
+    const enterNode = joiningMeeting
+      ? findLowestTextNode(setupSnapshot.layout, [enterLabel])
+      : findTextNode(setupSnapshot.layout, [enterLabel]);
     if (!enterNode) {
-      fail('meeting_entered', '进入会议', '设置页未找到“进入会议”按钮');
+      fail(
+        'meeting_entered',
+        '进入会议',
+        `设置页未找到“${enterLabel}”按钮`,
+      );
     }
     await device.tap({
       x: Math.round((enterNode.bounds.x1 + enterNode.bounds.x2) / 2),
@@ -366,22 +477,65 @@ export async function executeTencentQuickMeeting({
     });
     await sleep(waits.afterEnterMeetingMs);
 
-    const meetingState = await waitForValue(
-      async () => {
-        const [focus, snapshot] = await Promise.all([
-          device.getCurrentFocus(),
-          device.getUiTextSnapshot().catch(() => null),
-        ]);
-        return { focus, snapshot };
-      },
-      ({ focus, snapshot }) =>
-        isTencentMeetingFocus(focus, app) &&
-        snapshot &&
-        !snapshot.text.includes('进入会议') &&
-        hasNxHostSurface(snapshot.layout),
+    if (joiningMeeting) {
+      const passwordSnapshot = await device.getUiTextSnapshot().catch(() => null);
+      if (isTencentPasswordSnapshot(passwordSnapshot)) {
+        if (!meetingPassword) {
+          fail(
+            'meeting_password_entered',
+            '输入会议密码',
+            '会议要求输入密码，但快捷任务没有配置会议密码',
+          );
+        }
+        const passwordInput = findTencentPasswordInput(
+          passwordSnapshot.layout,
+          size,
+        );
+        if (!passwordInput) {
+          fail(
+            'meeting_password_entered',
+            '输入会议密码',
+            '会议密码页未找到密码输入框',
+          );
+        }
+        await device.inputText(meetingPassword, {
+          clearExisting: true,
+          x: passwordInput.x,
+          y: passwordInput.y,
+        });
+        await sleep(waits.afterPasswordInputMs);
+        const filledPasswordSnapshot =
+          (await device.getUiTextSnapshot().catch(() => null)) ||
+          passwordSnapshot;
+        const passwordConfirm = findLowestTextNode(
+          filledPasswordSnapshot.layout,
+          ['加入会议', '确定', '确认'],
+        );
+        if (!passwordConfirm) {
+          fail(
+            'meeting_password_entered',
+            '输入会议密码',
+            '会议密码页未找到确认按钮',
+          );
+        }
+        await tapNode(device, passwordConfirm);
+        await sleep(waits.afterEnterMeetingMs);
+        pass('meeting_password_entered', '输入会议密码', '已填写');
+      } else {
+        pass(
+          'meeting_password_not_required',
+          '会议密码',
+          meetingPassword ? '未出现密码输入页' : '会议无需密码',
+        );
+      }
+    }
+
+    const meetingState = await waitForTencentMeetingEntry({
+      device,
+      app,
       waits,
       sleep,
-    );
+    });
     if (!meetingState) {
       fail(
         'meeting_entered',
@@ -396,65 +550,90 @@ export async function executeTencentQuickMeeting({
     );
     meetingEntered = true;
 
-    if (desiredShareScreen) {
-      const shareSteps = selectTencentShareSteps(recordedSteps, sourceScreen || size);
-      if (!shareSteps.length) {
-        fail(
-          'share_dialog_opened',
-          '打开共享屏幕确认',
-          '录制轨迹中没有可用于共享屏幕的会中动作',
-        );
-      }
+    if (typeof startCapture === 'function') {
+      await startCapture();
+      pass('capture_started', '任务采集', '进入会议后已启动采集');
+    }
 
+    if (desiredShareScreen) {
       let shareDialogState = null;
       let sharingState = null;
-      for (const [{ step, index }, position] of shareSteps.map((entry, position) => [
-        entry,
-        position,
-      ])) {
-        const beforeFocus = await device.getCurrentFocus().catch(() => null);
-        if (isShareDialogFocus(beforeFocus)) {
-          shareDialogState = await readShareFlowState(device, beforeFocus);
-          break;
-        }
+      const dynamicShareState = await openTencentShareDialogDynamically({
+        device,
+        screen: size,
+        waits,
+        sleep,
+        onStatus,
+      });
+      if (dynamicShareState?.sharingStarted) {
+        sharingState = {
+          ...dynamicShareState,
+          dynamicEntry: true,
+        };
+      } else if (dynamicShareState?.open) {
+        shareDialogState = dynamicShareState;
+      }
 
-        await executeStep(step, { targetScreen: size });
-        replayStepIndex = index + 1;
-        onStep(replayStepIndex);
-        const actionDelay = Math.max(
-          Number(step.delayMs) || 0,
-          waits.shareStepDelayMs,
+      if (!shareDialogState && !sharingState) {
+        const shareSteps = selectTencentShareSteps(
+          recordedSteps,
+          sourceScreen || size,
         );
-        await sleep(actionDelay);
-
-        const afterFocus = await device.getCurrentFocus().catch(() => null);
-        if (isShareDialogFocus(afterFocus)) {
-          shareDialogState = await readShareFlowState(device, afterFocus);
-          break;
+        if (!shareSteps.length) {
+          fail(
+            'share_dialog_opened',
+            '打开共享屏幕确认',
+            '动态定位共享入口失败，录制轨迹中也没有可用的共享屏幕动作',
+          );
         }
 
-        const shouldInspectLayout =
-          position >= 2 || position === shareSteps.length - 1;
-        if (!shouldInspectLayout) continue;
+        for (const [{ step, index }, position] of shareSteps.map(
+          (entry, position) => [entry, position],
+        )) {
+          const beforeFocus = await device.getCurrentFocus().catch(() => null);
+          if (isShareDialogFocus(beforeFocus)) {
+            shareDialogState = await readShareFlowState(device, beforeFocus);
+            break;
+          }
 
-        const visualState = await readShareVisualState(device);
-        if (visualState?.active) {
-          sharingState = {
-            focus: afterFocus,
-            snapshot: null,
-            visualEvidence: visualState,
-          };
-          break;
-        }
+          await executeStep(step, { targetScreen: size });
+          replayStepIndex = index + 1;
+          onStep(replayStepIndex);
+          const actionDelay = Math.max(
+            Number(step.delayMs) || 0,
+            waits.shareStepDelayMs,
+          );
+          await sleep(actionDelay);
 
-        const after = await readShareFlowState(device, afterFocus);
-        if (after.sharingStarted) {
-          sharingState = after;
-          break;
-        }
-        if (after.open) {
-          shareDialogState = after;
-          break;
+          const afterFocus = await device.getCurrentFocus().catch(() => null);
+          if (isShareDialogFocus(afterFocus)) {
+            shareDialogState = await readShareFlowState(device, afterFocus);
+            break;
+          }
+
+          const shouldInspectLayout =
+            position >= 2 || position === shareSteps.length - 1;
+          if (!shouldInspectLayout) continue;
+
+          const visualState = await readShareVisualState(device);
+          if (visualState?.active) {
+            sharingState = {
+              focus: afterFocus,
+              snapshot: null,
+              visualEvidence: visualState,
+            };
+            break;
+          }
+
+          const after = await readShareFlowState(device, afterFocus);
+          if (after.sharingStarted) {
+            sharingState = after;
+            break;
+          }
+          if (after.open) {
+            shareDialogState = after;
+            break;
+          }
         }
       }
 
@@ -484,7 +663,9 @@ export async function executeTencentQuickMeeting({
         pass(
           'share_dialog_opened',
           '打开共享屏幕确认',
-          '共享已启动，系统覆盖窗口由录制确认动作完成',
+          sharingState.dynamicEntry
+            ? '动态共享入口已启动，系统权限已复用'
+            : '共享已启动，系统覆盖窗口由录制确认动作完成',
         );
         pass(
           'share_confirmed',
@@ -518,26 +699,31 @@ export async function executeTencentQuickMeeting({
         });
         await sleep(waits.afterShareConfirmMs);
 
-        const confirmedVisualState = await readShareVisualState(device);
-        const confirmedSharingState = await waitForValue(
-          async () => {
-            const [focus, snapshot] = await Promise.all([
-              device.getCurrentFocus().catch(() => null),
-              device.getUiTextSnapshot().catch(() => null),
-            ]);
-            return { focus, snapshot };
-          },
-          ({ focus, snapshot }) =>
-            isTencentMeetingFocus(focus, app) &&
-            hasShareStartedSnapshot(snapshot),
-          waits,
-          sleep,
-        );
+        let confirmedVisualState = await readShareVisualState(device);
+        let confirmedSharingState = await readTencentShareStartedState({
+          device,
+          app,
+        });
+        if (!confirmedSharingState && !confirmedVisualState?.active) {
+          await revealTencentMeetingControls({
+            device,
+            screen: size,
+            waits,
+            sleep,
+          });
+          confirmedVisualState = await readShareVisualState(device);
+          confirmedSharingState = await waitForValue(
+            () => readTencentShareStartedState({ device, app }),
+            Boolean,
+            waits,
+            sleep,
+          );
+        }
         if (!confirmedSharingState && !confirmedVisualState?.active) {
           fail(
             'share_confirmed',
             '确认共享屏幕',
-            '点击允许后未检测到“正在共享屏幕”或“停止共享”状态',
+            '点击允许后未检测到“正在共享屏幕”“停止共享”或“结束共享”状态',
           );
         }
         pass(
@@ -575,24 +761,39 @@ export async function executeTencentQuickMeeting({
     }
     pass('meeting_sustained', '会议保持');
 
-    const endedNormally = await endTencentMeetingNormally({
-      device,
-      screen: size,
-      waits,
-      sleep,
-    });
+    const endedNormally = await (joiningMeeting
+      ? leaveTencentMeetingNormally({
+          device,
+          screen: size,
+          waits,
+          sleep,
+        })
+      : endTencentMeetingNormally({
+          device,
+          screen: size,
+          waits,
+          sleep,
+        }));
     if (!endedNormally) {
       await device.forceStopPackage(app.packageName).catch(() => {});
       fail(
         'meeting_cleanup',
         '会议清理',
-        '未能通过“结束会议”正常结束，会话未通过清理验证',
+        joiningMeeting
+          ? '未能通过“离开会议”正常离会，会话未通过清理验证'
+          : '未能通过“结束会议”正常结束，会话未通过清理验证',
       );
     }
-    pass('meeting_cleanup', '会议清理', '已正常结束会议并返回首页');
+    pass(
+      'meeting_cleanup',
+      '会议清理',
+      joiningMeeting
+        ? '已正常离开会议并返回首页'
+        : '已正常结束会议并返回首页',
+    );
 
     return {
-      validationMode: 'tencent_quick_meeting_v1',
+      validationMode,
       validationChecks: checks,
       effectiveDurationMs,
       replayStepIndex,
@@ -601,18 +802,26 @@ export async function executeTencentQuickMeeting({
     let endedNormally = false;
     if (meetingEntered) {
       endedNormally = Boolean(
-        await endTencentMeetingNormally({
-          device,
-          screen: activeScreen,
-          waits,
-          sleep,
-        }).catch(() => null),
+        await (joiningMeeting
+          ? leaveTencentMeetingNormally({
+              device,
+              screen: activeScreen,
+              waits,
+              sleep,
+            })
+          : endTencentMeetingNormally({
+              device,
+              screen: activeScreen,
+              waits,
+              sleep,
+            })
+        ).catch(() => null),
       );
     }
     if (!endedNormally) {
       await device.forceStopPackage(app.packageName).catch(() => {});
     }
-    error.validationMode = 'tencent_quick_meeting_v1';
+    error.validationMode = validationMode;
     error.validationChecks = checks;
     error.effectiveDurationMs = effectiveDurationMs;
     error.replayStepIndex = replayStepIndex;
@@ -664,6 +873,55 @@ async function endTencentMeetingNormally({ device, screen, waits, sleep }) {
   );
 }
 
+async function leaveTencentMeetingNormally({ device, screen, waits, sleep }) {
+  let leaveDialog = null;
+  for (let attempt = 0; attempt < 3 && !leaveDialog; attempt += 1) {
+    const snapshot = await device.getUiTextSnapshot().catch(() => null);
+    if (
+      snapshot?.text.includes('确定离开会议吗') &&
+      snapshot.text.includes('离开会议')
+    ) {
+      leaveDialog = snapshot;
+      break;
+    }
+
+    const leaveNode = findTextNode(snapshot?.layout, ['离开']);
+    if (leaveNode) {
+      await tapNode(device, leaveNode);
+    } else if (attempt < 2) {
+      await device.keyevent('KEYCODE_BACK');
+    } else {
+      await device.tap({
+        x: Math.round(screen.width * (1182 / 1280)),
+        y: Math.round(screen.height * (221 / 2832)),
+      });
+    }
+    await sleep(waits.afterEndDialogMs);
+    leaveDialog = await waitForValue(
+      () => device.getUiTextSnapshot(),
+      (candidate) =>
+        candidate &&
+        candidate.text.includes('离开会议') &&
+        (candidate.text.includes('确定离开会议吗') ||
+          !candidate.text.includes('结束会议')),
+      {
+        ...waits,
+        stateTimeoutMs: Math.min(waits.stateTimeoutMs, 3000),
+      },
+      sleep,
+    );
+  }
+
+  const leaveMeetingNode = findLowestTextNode(leaveDialog?.layout, [
+    '离开会议',
+  ]);
+  if (!leaveMeetingNode) return null;
+  await tapNode(device, leaveMeetingNode);
+  await sleep(waits.afterEndConfirmMs);
+
+  return waitForTencentHomeSnapshot({ device, waits, sleep });
+}
+
 function normalizeLegacyLongPress(entry, screen) {
   const step = { ...entry.step };
   const expectedX = screen.width * (937 / DEFAULT_SCREEN.width);
@@ -694,6 +952,110 @@ async function waitForMeetingDuration({ device, app, durationMs, sleep }) {
   }
 }
 
+async function waitForTencentHome({ device, app, waits, sleep }) {
+  const deadline = Date.now() + Math.max(0, Number(waits.stateTimeoutMs) || 0);
+
+  while (true) {
+    const [focus, snapshot] = await Promise.all([
+      device.getCurrentFocus().catch(() => null),
+      device.getUiTextSnapshot().catch(() => null),
+    ]);
+    if (
+      isTencentMeetingFocus(focus, app) &&
+      snapshot?.text.includes('快速会议') &&
+      snapshot.text.includes('加入会议')
+    ) {
+      if (isTencentRecoverySnapshot(snapshot)) {
+        const cancelNode = findTextNode(snapshot.layout, ['取消']);
+        if (cancelNode) {
+          await tapNode(device, cancelNode);
+          await sleep(waits.afterRecoveryDismissMs);
+          continue;
+        }
+      }
+      return snapshot;
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(waits.pollIntervalMs);
+  }
+
+  return null;
+}
+
+async function waitForTencentHomeSnapshot({ device, waits, sleep }) {
+  return waitForValue(
+    () => device.getUiTextSnapshot(),
+    (snapshot) =>
+      snapshot &&
+      snapshot.text.includes('快速会议') &&
+      snapshot.text.includes('加入会议'),
+    waits,
+    sleep,
+  );
+}
+
+async function waitForTencentMeetingEntry({ device, app, waits, sleep }) {
+  const deadline = Date.now() + Math.max(0, Number(waits.stateTimeoutMs) || 0);
+
+  while (true) {
+    const [focus, snapshot] = await Promise.all([
+      device.getCurrentFocus().catch(() => null),
+      device.getUiTextSnapshot().catch(() => null),
+    ]);
+    if (isTencentPermissionSnapshot(snapshot)) {
+      const handled = await handleTencentPermissionSnapshot({
+        device,
+        snapshot,
+        waits,
+        sleep,
+      });
+      if (handled) continue;
+    }
+    if (
+      isTencentMeetingFocus(focus, app) &&
+      snapshot &&
+      !snapshot.text.includes('正在进入会议') &&
+      !isTencentMeetingSetupSnapshot(snapshot) &&
+      !isTencentPasswordSnapshot(snapshot) &&
+      hasNxHostSurface(snapshot.layout)
+    ) {
+      return { focus, snapshot };
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(waits.pollIntervalMs);
+  }
+
+  return null;
+}
+
+async function handleTencentPermissionSnapshot({
+  device,
+  snapshot = null,
+  waits,
+  sleep,
+}) {
+  let current =
+    snapshot || (await device.getUiTextSnapshot().catch(() => null));
+  if (!isTencentPermissionSnapshot(current)) return false;
+
+  const allowNode = findTextNode(current.layout, [
+    '允许',
+    '仅使用期间允许',
+    '使用时允许',
+  ]);
+  if (!allowNode) return false;
+  await tapNode(device, allowNode);
+  await sleep(waits.afterPermissionChoiceMs);
+
+  current = await device.getUiTextSnapshot().catch(() => null);
+  const confirmNode = findTextNode(current?.layout, ['确定']);
+  if (confirmNode) {
+    await tapNode(device, confirmNode);
+    await sleep(waits.afterPermissionConfirmMs);
+  }
+  return true;
+}
+
 async function waitForValue(read, predicate, timings, sleep) {
   const timeoutMs = Math.max(0, Number(timings.stateTimeoutMs) || 0);
   const intervalMs = Math.max(0, Number(timings.pollIntervalMs) || 0);
@@ -708,6 +1070,61 @@ async function waitForValue(read, predicate, timings, sleep) {
   } while (Date.now() - startedAt <= timeoutMs);
 
   return null;
+}
+
+function isTencentRecoverySnapshot(snapshot) {
+  const text = String(snapshot?.text || '');
+  return (
+    text.includes('上次异常退出') &&
+    text.includes('恢复会议') &&
+    text.includes('取消')
+  );
+}
+
+function isTencentPermissionSnapshot(snapshot) {
+  const text = String(snapshot?.text || '');
+  return (
+    /(麦克风|摄像头|相机)权限/.test(text) &&
+    /(允许|使用时允许)/.test(text) &&
+    text.includes('确定')
+  );
+}
+
+function isTencentQuickSetupSnapshot(snapshot) {
+  const text = String(snapshot?.text || '');
+  return text.includes('开启视频') && text.includes('进入会议');
+}
+
+function isTencentJoinSetupSnapshot(snapshot) {
+  const text = String(snapshot?.text || '');
+  return (
+    text.includes('会议号') &&
+    text.includes('您的名称') &&
+    text.includes('开启视频') &&
+    text.includes('加入会议')
+  );
+}
+
+function isTencentMeetingSetupSnapshot(snapshot) {
+  return (
+    isTencentQuickSetupSnapshot(snapshot) ||
+    isTencentJoinSetupSnapshot(snapshot)
+  );
+}
+
+function isTencentPasswordSnapshot(snapshot) {
+  const text = String(snapshot?.text || '');
+  return (
+    /(会议密码|请输入密码|输入会议密码)/.test(text) &&
+    /(加入会议|确定|确认)/.test(text)
+  );
+}
+
+async function tapNode(device, node) {
+  await device.tap({
+    x: Math.round((node.bounds.x1 + node.bounds.x2) / 2),
+    y: Math.round((node.bounds.y1 + node.bounds.y2) / 2),
+  });
 }
 
 function isTencentMeetingFocus(focus, app) {
@@ -728,6 +1145,114 @@ function isShareDialogFocus(focus) {
   );
 }
 
+async function openTencentShareDialogDynamically({
+  device,
+  screen,
+  waits,
+  sleep,
+  onStatus,
+}) {
+  let meetingSnapshot = await device.getUiTextSnapshot().catch(() => null);
+  onStatus(
+    `共享动态定位: 初始会中状态 ${summarizeTencentShareSnapshot(meetingSnapshot)}`,
+  );
+  let shareEntry = findLowestTextNode(meetingSnapshot?.layout, [
+    '共享屏幕',
+  ]);
+  if (!shareEntry) {
+    await revealTencentMeetingControls({
+      device,
+      screen,
+      waits,
+      sleep,
+    });
+    meetingSnapshot = await waitForValue(
+      () => device.getUiTextSnapshot(),
+      (snapshot) => snapshot?.text.includes('共享屏幕'),
+      {
+        ...waits,
+        stateTimeoutMs: Math.min(waits.stateTimeoutMs, 3000),
+      },
+      sleep,
+    );
+    shareEntry = findLowestTextNode(meetingSnapshot?.layout, ['共享屏幕']);
+  }
+  if (!shareEntry) {
+    onStatus(
+      `共享动态定位: 未找到会中共享入口 ${summarizeTencentShareSnapshot(meetingSnapshot)}`,
+    );
+    return null;
+  }
+  onStatus(`共享动态定位: 点击会中共享入口 ${shareEntry.rawBounds}`);
+  await tapNode(device, shareEntry);
+  await sleep(waits.shareStepDelayMs);
+
+  const menuSnapshot = await waitForValue(
+    () => device.getUiTextSnapshot(),
+    (snapshot) =>
+      snapshot?.text.includes('共享屏幕') &&
+      snapshot.text.includes('共享白板'),
+    {
+      ...waits,
+      stateTimeoutMs: Math.min(waits.stateTimeoutMs, 3000),
+    },
+    sleep,
+  );
+  const menuAction = findTencentShareMenuAction(menuSnapshot?.layout, screen);
+  if (!menuAction) {
+    onStatus(
+      `共享动态定位: 未找到二级共享菜单 ${summarizeTencentShareSnapshot(menuSnapshot)}`,
+    );
+    return null;
+  }
+  onStatus(
+    `共享动态定位: 点击二级共享菜单 (${menuAction.x},${menuAction.y})`,
+  );
+  await device.tap(menuAction);
+  await sleep(waits.shareStepDelayMs);
+
+  const shareState = await waitForValue(
+    () => readShareFlowState(device),
+    (state) => state?.open || state?.sharingStarted,
+    {
+      ...waits,
+      stateTimeoutMs: Math.max(
+        waits.shareDialogTimeoutMs,
+        Math.min(waits.stateTimeoutMs, 5000),
+      ),
+    },
+    sleep,
+  );
+  if (shareState) {
+    onStatus(
+      `共享动态定位: 检测到${shareState.open ? '系统确认' : '共享状态'} ${summarizeTencentShareSnapshot(shareState.snapshot)}`,
+    );
+    return shareState;
+  }
+
+  await revealTencentMeetingControls({
+    device,
+    screen,
+    waits,
+    sleep,
+  });
+  const directShareState = await waitForValue(
+    () => readShareFlowState(device),
+    (state) => state?.sharingStarted,
+    {
+      ...waits,
+      stateTimeoutMs: Math.min(waits.stateTimeoutMs, 3000),
+    },
+    sleep,
+  );
+  onStatus(
+    directShareState
+      ? `共享动态定位: 无确认窗直接共享 ${summarizeTencentShareSnapshot(directShareState.snapshot)}`
+      : '共享动态定位: 二级菜单后未检测到确认窗或共享状态',
+  );
+  return directShareState;
+}
+
 async function readShareFlowState(device, knownFocus = null) {
   const [focus, snapshot] = await Promise.all([
     knownFocus
@@ -746,6 +1271,24 @@ async function readShareFlowState(device, knownFocus = null) {
       ? focus.bundleName || focus.packageName || SHARE_DIALOG_BUNDLE
       : shareDialogEvidence(snapshot),
   };
+}
+
+async function readTencentShareStartedState({ device, app }) {
+  const [focus, snapshot] = await Promise.all([
+    device.getCurrentFocus().catch(() => null),
+    device.getUiTextSnapshot().catch(() => null),
+  ]);
+  return isTencentMeetingFocus(focus, app) && hasShareStartedSnapshot(snapshot)
+    ? { focus, snapshot }
+    : null;
+}
+
+async function revealTencentMeetingControls({ device, screen, waits, sleep }) {
+  await device.tap({
+    x: Math.round(screen.width * 0.5),
+    y: Math.round(screen.height * 0.67),
+  });
+  await sleep(Math.min(500, Math.max(200, waits.shareStepDelayMs)));
 }
 
 async function readShareVisualState(device) {
@@ -781,18 +1324,37 @@ function shareDialogEvidence(snapshot) {
 }
 
 function hasShareStartedSnapshot(snapshot) {
-  return /(您?正在共享屏幕|停止共享)/.test(String(snapshot?.text || ''));
+  return /(您?正在共享屏幕|停止共享|结束共享)/.test(
+    String(snapshot?.text || ''),
+  );
 }
 
 function shareStateEvidence(snapshot) {
   const text = String(snapshot?.text || '');
-  return ['您正在共享屏幕', '正在共享屏幕', '停止共享'].find((value) =>
-    text.includes(value),
-  ) || '共享状态已出现';
+  return (
+    ['您正在共享屏幕', '正在共享屏幕', '停止共享', '结束共享'].find(
+      (value) => text.includes(value),
+    ) || '共享状态已出现'
+  );
 }
 
 function shareVisualEvidence(state) {
   return `共享状态页像素验证通过 dark=${state.darkRatio.toFixed(3)} green=${state.greenRatio.toFixed(3)} red=${state.redRatio.toFixed(3)}`;
+}
+
+function summarizeTencentShareSnapshot(snapshot) {
+  const text = String(snapshot?.text || '');
+  const markers = [
+    '正在进入会议',
+    '共享屏幕',
+    '共享白板',
+    '使用你的屏幕',
+    '允许',
+    '结束共享',
+    '停止共享',
+    '离开',
+  ].filter((value) => text.includes(value));
+  return markers.length ? markers.join(',') : `textLength=${text.length}`;
 }
 
 function hasNxHostSurface(layout) {
@@ -814,6 +1376,118 @@ function findTextNode(layout, texts, { partial = false } = {}) {
       ),
     ) || null
   );
+}
+
+function findLowestTextNode(layout, texts, { partial = false } = {}) {
+  const expected = Array.isArray(texts) ? texts : [texts];
+  return (
+    flattenLayout(layout)
+      .filter((node) =>
+        expected.some((candidate) =>
+          node.textValues.some((value) =>
+            partial
+              ? value.includes(String(candidate))
+              : value === String(candidate),
+          ),
+        ),
+      )
+      .sort((left, right) => right.bounds.y2 - left.bounds.y2)[0] || null
+  );
+}
+
+function findTencentMeetingIdInput(layout, screen) {
+  const size = normalizeScreen(screen);
+  const nodes = flattenLayout(layout);
+  const placeholder = nodes.find((node) =>
+    node.textValues.some((value) => value.includes('请输入会议号')),
+  );
+  if (placeholder) return pointForNode(placeholder);
+
+  const input = nodes.find((node) => {
+    const centerY = (node.bounds.y1 + node.bounds.y2) / 2;
+    return (
+      /TextInput/i.test(String(node.attributes.type || '')) &&
+      centerY >= size.height * 0.1 &&
+      centerY <= size.height * 0.25
+    );
+  });
+  if (input) return pointForNode(input);
+
+  const label = findTextNode(layout, ['会议号']);
+  if (!label) return null;
+  return {
+    x: Math.round(size.width * 0.55),
+    y: Math.round((label.bounds.y1 + label.bounds.y2) / 2),
+  };
+}
+
+function findTencentPasswordInput(layout, screen) {
+  const size = normalizeScreen(screen);
+  const nodes = flattenLayout(layout);
+  const placeholder = nodes.find((node) =>
+    node.textValues.some((value) =>
+      /(请输入密码|输入会议密码|会议密码)/.test(value),
+    ),
+  );
+  if (placeholder) return pointForNode(placeholder);
+
+  const input = nodes.find((node) => {
+    const centerY = (node.bounds.y1 + node.bounds.y2) / 2;
+    return (
+      /TextInput/i.test(String(node.attributes.type || '')) &&
+      centerY >= size.height * 0.1 &&
+      centerY <= size.height * 0.6
+    );
+  });
+  return input ? pointForNode(input) : null;
+}
+
+function findTencentShareMenuAction(layout, screen) {
+  const size = normalizeScreen(screen);
+  const nodes = flattenLayout(layout);
+  const whiteboard = nodes.find((node) =>
+    node.textValues.some((value) => value === '共享白板'),
+  );
+  const candidates = nodes.filter(
+    (node) =>
+      node.textValues.some((value) => value === '共享屏幕') &&
+      node.bounds.y2 < size.height * 0.94,
+  );
+  if (!candidates.length) return null;
+  if (!whiteboard) {
+    return pointForNode(
+      candidates.sort((left, right) => right.bounds.y2 - left.bounds.y2)[0],
+    );
+  }
+  const aboveWhiteboard = candidates
+    .filter((node) => node.bounds.y2 <= whiteboard.bounds.y1)
+    .sort(
+      (left, right) =>
+        whiteboard.bounds.y1 -
+        left.bounds.y2 -
+        (whiteboard.bounds.y1 - right.bounds.y2),
+    )[0];
+  return aboveWhiteboard ? pointForNode(aboveWhiteboard) : null;
+}
+
+function snapshotContainsMeetingId(snapshot, expectedMeetingId) {
+  return flattenLayout(snapshot?.layout).some((node) =>
+    node.textValues.some(
+      (value) => normalizeMeetingId(value) === expectedMeetingId,
+    ),
+  );
+}
+
+function normalizeMeetingId(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length >= 6 && digits.length <= 15 ? digits : '';
+}
+
+function pointForNode(node) {
+  return {
+    x: Math.round((node.bounds.x1 + node.bounds.x2) / 2),
+    y: Math.round((node.bounds.y1 + node.bounds.y2) / 2),
+  };
 }
 
 function findPositiveConfirmationNode(layout) {
@@ -916,7 +1590,7 @@ function isPointStep(step) {
   return ['tap', 'long_press'].includes(step?.type);
 }
 
-function decodeRgbaPng(png) {
+export function decodeRgbaPng(png) {
   if (!Buffer.isBuffer(png) || png.length < 33) {
     throw new Error('PNG 数据为空');
   }

@@ -5,7 +5,7 @@ const DEFAULT_DURATION_MS = 10 * 60 * 1000;
 const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_RANDOM_SWITCH_MIN_MS = 2 * 60 * 1000;
 const DEFAULT_RANDOM_SWITCH_MAX_MS = 5 * 60 * 1000;
-const MIN_SWITCH_INTERVAL_MS = 30 * 1000;
+const MIN_SWITCH_INTERVAL_MS = 1000;
 
 export function buildLiveStreamPlan({
   app,
@@ -27,7 +27,7 @@ export function buildLiveStreamPlan({
   let index = 0;
 
   while (elapsed < safeDuration) {
-    const waitMs = Math.min(nextRandomSwitchWaitMs(switchIntervalMs), safeDuration - elapsed);
+    const waitMs = Math.min(nextSwitchWaitMs(switchIntervalMs), safeDuration - elapsed);
     steps.push({ type: 'wait', ms: waitMs, label: `观看直播 ${formatWaitLabel(waitMs)} 后切换` });
     elapsed += waitMs;
 
@@ -39,7 +39,9 @@ export function buildLiveStreamPlan({
         x2: x,
         y2: endY,
         durationMs: 420,
-        label: `随机间隔后下滑切换下一场直播 ${index + 1}`,
+        label: `${
+          hasConfiguredSwitchInterval(switchIntervalMs) ? '按设置间隔' : '随机间隔'
+        }后下滑切换下一场直播 ${index + 1}`,
       });
     }
 
@@ -50,14 +52,17 @@ export function buildLiveStreamPlan({
   return steps;
 }
 
-function nextRandomSwitchWaitMs(switchIntervalMs) {
+function nextSwitchWaitMs(switchIntervalMs) {
   const base = Number(switchIntervalMs);
   if (Number.isFinite(base) && base > 0) {
-    const safeBase = Math.max(MIN_SWITCH_INTERVAL_MS, base);
-    return randomInt(Math.round(safeBase * 0.7), Math.round(safeBase * 1.3));
+    return Math.max(MIN_SWITCH_INTERVAL_MS, Math.round(base));
   }
 
   return randomInt(DEFAULT_RANDOM_SWITCH_MIN_MS, DEFAULT_RANDOM_SWITCH_MAX_MS);
+}
+
+function hasConfiguredSwitchInterval(switchIntervalMs) {
+  return Number.isFinite(Number(switchIntervalMs)) && Number(switchIntervalMs) > 0;
 }
 
 function randomInt(min, max) {

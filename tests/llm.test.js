@@ -18,6 +18,7 @@ test('shared task parser prompt describes supported and unsupported flows', () =
   assert.match(prompt, /wechat_send_media/);
   assert.match(prompt, /sendMode/);
   assert.match(prompt, /sendCount/);
+  assert.match(prompt, /live_entry.*switchIntervalMs/);
   assert.match(prompt, /用户任务: 测试QQ音视频通话/);
 });
 

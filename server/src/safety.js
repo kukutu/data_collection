@@ -17,6 +17,22 @@ const ALLOWED_INTENTS = new Set([
   'wechat_channels_feed',
   'wechat_send_messages',
   'wechat_send_media',
+  'xunlei_upload_media',
+  'xunlei_download',
+  'app_store_download',
+  'baidu_netdisk_download',
+  'baidu_netdisk_upload',
+  'wechat_voip_call',
+  'qq_voip_call',
+  'dingtalk_voip_call',
+  'wecom_voip_call',
+  'welink_voip_call',
+  'tencent_quick_meeting',
+  'dingtalk_quick_meeting',
+  'feishu_quick_meeting',
+  'feishu_join_meeting',
+  'dingtalk_join_meeting',
+  'tencent_join_meeting',
   'ai_chat',
   'doubao_chat',
   'back',
@@ -83,7 +99,9 @@ export function evaluateSafety(parsedTask, originalText = '') {
   }
 
   if (
-    ['wechat_send_messages', 'wechat_send_media'].includes(parsedTask?.intent) &&
+    ['wechat_send_messages', 'wechat_send_media', 'wechat_voip_call', 'qq_voip_call', 'dingtalk_voip_call', 'wecom_voip_call', 'welink_voip_call'].includes(
+      parsedTask?.intent,
+    ) &&
     parsedTask.targetMode &&
     parsedTask.targetMode !== 'first'
   ) {

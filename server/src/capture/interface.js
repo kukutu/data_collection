@@ -42,14 +42,19 @@ function normalizeInterfaceName(value) {
 
 function execText(command, args) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { encoding: 'utf8', timeout: 15000 }, (error, stdout, stderr) => {
-      if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-        return;
-      }
-      resolve(stdout);
-    });
+    execFile(
+      command,
+      args,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
   });
 }

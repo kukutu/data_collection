@@ -29,14 +29,16 @@ const captureManager = new CaptureManager({
   device,
   hdcPath: config.hdc.path,
 });
+const actionRecorder = new ActionRecorder({ device, apps, workflows: workflowCatalog });
+await actionRecorder.loadFromDisk();
 const manager = new TaskManager({
   adb: device,
   apps,
   captureManager,
   workflows: workflowCatalog,
+  workflowExecutionProvider: (workflowId) =>
+    actionRecorder.getVerifiedWorkflowExecution(workflowId),
 });
-const actionRecorder = new ActionRecorder({ device, apps, workflows: workflowCatalog });
-await actionRecorder.loadFromDisk();
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -89,6 +91,10 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === '/api/recordings' && req.method === 'GET') {
       return sendJson(res, actionRecorder.list());
+    }
+
+    if (url.pathname === '/api/recordings/stats' && req.method === 'GET') {
+      return sendJson(res, actionRecorder.getRegressionSummary());
     }
 
     if (url.pathname === '/api/recordings/start' && req.method === 'POST') {

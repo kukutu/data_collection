@@ -1,12 +1,18 @@
 import { config } from '../config.js';
+import { buildDouyinLiveManualPlan } from './douyin-live.js';
 
 const DEFAULT_SCREEN = { width: config.screen.defaultWidth, height: config.screen.defaultHeight };
 const DEFAULT_DURATION_MS = 5 * 60 * 1000;
 const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_RANDOM_SWITCH_MIN_MS = 2 * 60 * 1000;
 const DEFAULT_RANDOM_SWITCH_MAX_MS = 5 * 60 * 1000;
-const MIN_SWITCH_INTERVAL_MS = 30 * 1000;
-const SUPPORTED_LIVE_ENTRY_APP_IDS = new Set(['douyin', 'taobao', 'jd', 'wechat', 'xiaohongshu']);
+const MIN_SWITCH_INTERVAL_MS = 1000;
+const SUPPORTED_LIVE_ENTRY_APP_IDS = new Set(['taobao', 'jd', 'wechat', 'xiaohongshu']);
+const MANUAL_LIVE_ENTRY_APP_IDS = new Set(['migu-video', 'tencent-sports']);
+const MANUAL_LIVE_ROOM_EVIDENCE = {
+  'migu-video': [/直播间/, /正在直播/, /直播中/, /赛事直播/, /比赛直播/],
+  'tencent-sports': [/直播间/, /正在直播/, /直播中/, /比赛直播/, /赛事直播/, /实时直播/],
+};
 const LIVE_EVIDENCE = [
   /直播间/,
   /正在直播/,
@@ -25,15 +31,6 @@ const LIVE_EVIDENCE = [
   /人气/,
   /观众/,
   /进来了/,
-];
-const DOUYIN_LIVE_ROOM_EVIDENCE = [
-  /欢迎来到直播间/,
-  /在线观众/,
-  /说点什么/,
-  /本场点赞/,
-  /商品列表/,
-  /连线/,
-  /礼物/,
 ];
 const TAOBAO_LIVE_ROOM_EVIDENCE = [
   /说点什么/,
@@ -60,6 +57,11 @@ const WECHAT_LIVE_ROOM_EVIDENCE = [
   WECHAT_LIVE_ROOM_CONTROL_EVIDENCE,
   /(正在直播|直播间内|人看过|观众)/,
 ];
+const XHS_LIVE_CHANNEL_EVIDENCE = [/直播中/];
+const XHS_LIVE_ROOM_EVIDENCE = [
+  /(欢迎来到直播间|更多直播)/,
+  /说点什么/,
+];
 
 export function buildLiveEntryPlan({
   app,
@@ -69,6 +71,21 @@ export function buildLiveEntryPlan({
 }) {
   if (!app?.packageName) {
     throw new Error('live entry skill requires an app packageName');
+  }
+  if (app.id === 'douyin') {
+    return buildDouyinLiveManualPlan({
+      app,
+      durationMs,
+      switchIntervalMs,
+      screen,
+    });
+  }
+  if (MANUAL_LIVE_ENTRY_APP_IDS.has(app.id)) {
+    return buildManualLiveEntryPlan({
+      app,
+      durationMs,
+      roomEvidence: MANUAL_LIVE_ROOM_EVIDENCE[app.id],
+    });
   }
   if (!SUPPORTED_LIVE_ENTRY_APP_IDS.has(app.id)) {
     throw new Error(`${app.name}当前没有稳定可验证的直播入口，已从自动直播功能中移除。`);
@@ -89,7 +106,7 @@ export function buildLiveEntryPlan({
   let elapsed = sumWaits(steps);
   let index = 0;
   while (elapsed < safeDuration) {
-    const waitMs = Math.min(nextRandomSwitchWaitMs(switchIntervalMs), safeDuration - elapsed);
+    const waitMs = Math.min(nextSwitchWaitMs(switchIntervalMs), safeDuration - elapsed);
     if (waitMs > 0) {
       steps.push({ type: 'wait', ms: waitMs, label: `观看直播 ${formatWaitLabel(waitMs)} 后切换` });
       elapsed += waitMs;
@@ -102,7 +119,9 @@ export function buildLiveEntryPlan({
         x2: x,
         y2: Math.round(size.height * 0.22),
         durationMs: 420,
-        label: `随机间隔后下滑切换下一场直播 ${index + 1}`,
+        label: `${
+          hasConfiguredSwitchInterval(switchIntervalMs) ? '按设置间隔' : '随机间隔'
+        }后下滑切换下一场直播 ${index + 1}`,
       });
       elapsed += 800;
     }
@@ -113,10 +132,56 @@ export function buildLiveEntryPlan({
   return steps;
 }
 
-function buildLiveEntrySteps({ app, size, x, safeDuration }) {
-  if (app.id === 'douyin') {
-    return buildDouyinLiveEntrySteps({ app, size, safeDuration });
+export function buildManualLiveEntryPlan({
+  app,
+  durationMs = DEFAULT_DURATION_MS,
+  roomEvidence = [/直播间/, /正在直播/, /直播中/],
+} = {}) {
+  if (!app?.packageName || !MANUAL_LIVE_ENTRY_APP_IDS.has(app.id)) {
+    throw new Error('人工直播接管计划只支持已登记的咪咕视频或腾讯体育');
   }
+  const safeDuration = Math.max(1000, Math.min(Number(durationMs) || DEFAULT_DURATION_MS, MAX_DURATION_MS));
+  return [
+    {
+      type: 'manual_confirm',
+      label: `等待用户进入${app.name}直播间`,
+      message: `请在手机上手动进入${app.name}的具体直播间，然后在前端点击“我已进入直播，继续”。`,
+      confirmLabel: '我已进入直播，继续',
+    },
+    {
+      type: 'assert_foreground_package',
+      packageName: app.packageName,
+      label: `确认当前前台为${app.name}`,
+      message: `当前未停留在${app.name}，请重新进入直播间。`,
+    },
+    {
+      type: 'assert_ui_text',
+      any: roomEvidence,
+      retries: 8,
+      retryIntervalMs: 1000,
+      label: `确认已进入${app.name}真实直播间`,
+      message: `${app.name}未出现直播间证据，请确认已经进入具体直播间。`,
+    },
+    {
+      type: 'assert_screen_changes',
+      intervalMs: 1500,
+      minDiffRatio: 0.0005,
+      label: `确认${app.name}直播画面持续变化`,
+      message: `${app.name}直播画面没有持续变化，请确认直播正在播放。`,
+    },
+    { type: 'start_capture', label: `开始采集${app.name}直播内容` },
+    { type: 'wait', ms: safeDuration, silent: true },
+    {
+      type: 'assert_foreground_package',
+      packageName: app.packageName,
+      label: `确认仍在${app.name}直播间`,
+      message: `观看期间已经离开${app.name}，任务停止。`,
+    },
+    { type: 'complete', label: `${app.name}直播浏览完成` },
+  ];
+}
+
+function buildLiveEntrySteps({ app, size, x, safeDuration }) {
   if (app.id === 'jd') {
     return buildJdLiveEntrySteps({ app, size, safeDuration });
   }
@@ -195,14 +260,17 @@ function sumWaits(steps) {
   return steps.filter((step) => step.type === 'wait').reduce((sum, step) => sum + step.ms, 0);
 }
 
-function nextRandomSwitchWaitMs(switchIntervalMs) {
+function nextSwitchWaitMs(switchIntervalMs) {
   const base = Number(switchIntervalMs);
   if (Number.isFinite(base) && base > 0) {
-    const safeBase = Math.max(MIN_SWITCH_INTERVAL_MS, base);
-    return randomInt(Math.round(safeBase * 0.7), Math.round(safeBase * 1.3));
+    return Math.max(MIN_SWITCH_INTERVAL_MS, Math.round(base));
   }
 
   return randomInt(DEFAULT_RANDOM_SWITCH_MIN_MS, DEFAULT_RANDOM_SWITCH_MAX_MS);
+}
+
+function hasConfiguredSwitchInterval(switchIntervalMs) {
+  return Number.isFinite(Number(switchIntervalMs)) && Number(switchIntervalMs) > 0;
 }
 
 function randomInt(min, max) {
@@ -214,80 +282,6 @@ function randomInt(min, max) {
 function formatWaitLabel(ms) {
   if (ms >= 60 * 1000) return `${Math.round(ms / 60_000)} 分钟`;
   return `${Math.round(ms / 1000)} 秒`;
-}
-
-function buildDouyinLiveEntrySteps({ app, size, safeDuration }) {
-  const topY = Math.round(size.height * 0.08);
-  const previewX = Math.round(size.width * 0.5);
-  const previewY = Math.round(size.height * 0.69);
-  const topRegion = {
-    minX: 0,
-    maxX: size.width,
-    minY: 0,
-    maxY: Math.round(size.height * 0.18),
-  };
-  const liveActivity = [/Live/i];
-
-  return [
-    { type: 'launch_app', packageName: app.packageName, label: '打开抖音' },
-    { type: 'wait', ms: Math.min(5000, safeDuration), label: '等待抖音首页加载' },
-    { type: 'keyevent', code: 'KEYCODE_MEDIA_PAUSE', label: '暂停当前视频以稳定顶部频道识别' },
-    { type: 'wait', ms: 800, label: '等待当前视频暂停' },
-    { type: 'assert_no_sensitive_prompt', label: '检查协议和权限弹窗' },
-    {
-      type: 'tap_text_region',
-      texts: ['直播'],
-      optional: true,
-      region: topRegion,
-      label: '点击顶部直播频道文本',
-    },
-    { type: 'wait', ms: 1000, label: '等待直播频道选中' },
-    {
-      type: 'swipe_if_ui_text_not_matches',
-      activityAny: liveActivity,
-      matches: [/已选中，直播/],
-      x1: Math.round(size.width * 0.78),
-      y1: topY,
-      x2: Math.round(size.width * 0.22),
-      y2: topY,
-      durationMs: 280,
-      label: '横滑顶部频道栏查找直播',
-    },
-    { type: 'wait', ms: 600, label: '等待顶部频道栏移动' },
-    {
-      type: 'tap_text_region',
-      texts: ['直播'],
-      optional: true,
-      region: topRegion,
-      label: '再次点击顶部直播频道文本',
-    },
-    { type: 'wait', ms: 1000, label: '等待直播频道再次选中' },
-    {
-      type: 'assert_ui_text_or_activity',
-      packageName: app.packageName,
-      activityAny: liveActivity,
-      any: [/已选中，直播/],
-      label: '确认已选中抖音直播频道',
-      message: '抖音未选中顶部直播频道，停止以避免误点普通内容',
-    },
-    { type: 'wait', ms: 9000, label: '等待抖音直播频道加载' },
-    {
-      type: 'tap_if_activity_not_matches',
-      activityAny: liveActivity,
-      x: previewX,
-      y: previewY,
-      label: '点击直播预览画面',
-    },
-    { type: 'wait', ms: 8000, label: '等待抖音直播间加载' },
-    {
-      type: 'tap_if_activity_not_matches',
-      activityAny: liveActivity,
-      x: previewX,
-      y: previewY,
-      label: '再次点击直播预览画面',
-    },
-    { type: 'wait', ms: 6000, label: '等待直播间稳定' },
-  ];
 }
 
 function buildJdLiveEntrySteps({ app, size, safeDuration }) {
@@ -423,46 +417,69 @@ function buildWechatLiveEntrySteps({ app, size, safeDuration }) {
 }
 
 function buildXhsLiveEntrySteps({ app, size, safeDuration }) {
+  const topRegion = {
+    minX: 0,
+    maxX: size.width,
+    minY: 0,
+    maxY: Math.round(size.height * 0.18),
+  };
+
   return [
+    { type: 'force_stop', packageName: app.packageName, label: '重启小红书以回到稳定首页' },
     { type: 'launch_app', packageName: app.packageName, label: '打开小红书' },
-    { type: 'wait', ms: Math.min(4000, safeDuration), label: '等待小红书首页加载' },
+    { type: 'wait', ms: Math.min(5000, safeDuration), label: '等待小红书首页加载' },
     { type: 'assert_no_sensitive_prompt', label: '检查协议和权限弹窗' },
     {
-      type: 'manual_confirm',
-      label: '等待人工接管小红书直播',
-      message: '请在手机上手动进入要观看的小红书直播间，然后在前端点击“我已点入视频，继续”。',
+      type: 'tap_text',
+      texts: ['稍后', '取消', '暂不', '跳过', '我知道了'],
+      optional: true,
+      partial: true,
+      label: '关闭小红书非必要提示',
     },
-    { type: 'wait', ms: 3000, label: '等待小红书直播间稳定' },
+    {
+      type: 'tap_text_region',
+      texts: ['发现'],
+      region: topRegion,
+      label: '点击小红书首页发现频道',
+    },
+    {
+      type: 'tap',
+      x: Math.round(size.width * 0.5),
+      y: Math.round(size.height * 0.075),
+      label: '兜底点击小红书首页发现频道',
+    },
+    { type: 'wait', ms: 1200, label: '等待小红书发现频道稳定' },
+    {
+      type: 'tap_text_region',
+      texts: ['直播'],
+      region: topRegion,
+      label: '点击小红书顶部直播频道',
+    },
+    {
+      type: 'tap',
+      x: Math.round(size.width * 0.355),
+      y: Math.round(size.height * 0.125),
+      label: '兜底点击小红书顶部直播频道',
+    },
+    { type: 'wait', ms: 5000, label: '等待小红书直播频道加载' },
+    {
+      type: 'assert_ui_text',
+      any: XHS_LIVE_CHANNEL_EVIDENCE,
+      label: '确认小红书直播频道已加载',
+      message: '小红书直播频道未出现直播卡片，停止以避免误点普通内容',
+    },
+    {
+      type: 'tap',
+      x: Math.round(size.width * 0.19),
+      y: Math.round(size.height * 0.25),
+      label: '点击小红书首张直播卡片',
+    },
+    { type: 'wait', ms: 6000, label: '等待小红书直播间稳定' },
+    { type: 'assert_no_sensitive_prompt', label: '检查小红书直播页弹窗' },
   ];
 }
 
 function buildLiveValidationSteps(app) {
-  if (app.id === 'douyin') {
-    return [
-      {
-        type: 'assert_foreground_package',
-        packageName: app.packageName,
-        activityAny: [/Live/i],
-        label: '确认进入抖音直播 Activity',
-        message: '抖音未进入直播 Activity，不能判定为真实直播播放',
-      },
-      {
-        type: 'assert_ui_text',
-        any: DOUYIN_LIVE_ROOM_EVIDENCE,
-        optional: true,
-        label: '辅助确认抖音直播间文本证据',
-        message: '抖音未出现直播间控件或直播间提示，不能判定为真实直播播放',
-      },
-      {
-        type: 'assert_screen_changes',
-        intervalMs: 1500,
-        minDiffRatio: 0.0005,
-        label: '确认抖音直播画面在变化',
-        message: '抖音直播画面变化不足，不能判定为真实直播播放',
-      },
-    ];
-  }
-
   if (app.id === 'taobao') {
     return [
       {
@@ -538,9 +555,13 @@ function buildLiveValidationSteps(app) {
       {
         type: 'assert_foreground_package',
         packageName: app.packageName,
-        activityAny: [/AlphaAudienceActivity/i, /alpha.*audience/i],
-        label: '确认进入小红书直播间 Activity',
-        message: '小红书未进入真实直播间 Activity，不能判定为真实直播播放',
+        label: '确认小红书仍在前台',
+      },
+      {
+        type: 'assert_ui_text',
+        all: XHS_LIVE_ROOM_EVIDENCE,
+        label: '确认小红书直播间文本证据',
+        message: '小红书未出现直播间欢迎信息和评论输入框，不能判定为真实直播播放',
       },
       {
         type: 'assert_screen_changes',

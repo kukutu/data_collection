@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -11,6 +11,14 @@ import {
   parseRecordedTrajectory,
   selectRecordedTrajectory,
 } from '../server/src/action-recorder.js';
+import {
+  WECHAT_AUDIO_CALL_WORKFLOW_ID,
+  WECHAT_VOIP_VALIDATION_MODE,
+} from '../server/src/skills/wechat-voip.js';
+import {
+  KUAISHOU_LIVE_VALIDATION_MODE,
+  KUAISHOU_LIVE_WORKFLOW_ID,
+} from '../server/src/skills/kuaishou-live.js';
 import { getWorkflowCatalog } from '../server/src/workflow-registry.js';
 
 test('parses UI recorder actions into replayable trajectory steps', () => {
@@ -290,6 +298,9 @@ test('writes raw recorder logs and captures serialized context for each live act
     const rawLive = await readFile(stopped.rawLiveFile, 'utf8');
     const rawRemote = await readFile(stopped.rawRemoteFile, 'utf8');
     const contexts = JSON.parse(await readFile(stopped.contextFile, 'utf8'));
+    const evidence = JSON.parse(
+      await readFile(stopped.evidenceManifestFile, 'utf8'),
+    );
 
     assert.equal(stopped.actionContextCount, 2);
     assert.equal(stopped.contextCount, 4);
@@ -297,6 +308,9 @@ test('writes raw recorder logs and captures serialized context for each live act
     assert.equal(stopped.streamStepCount, 2);
     assert.equal(stopped.liveActionEventCount, 2);
     assert.equal(stopped.recordingQuality, 'good');
+    assert.equal(stopped.integrityStatus, 'complete');
+    assert.equal(evidence.integrityReport.status, 'complete');
+    assert.equal(evidence.entries.length, 2);
     assert.equal(maxActiveDeviceCalls, 1);
     assert.match(rawLive, /"source":"stdout"/);
     assert.match(rawLive, /fling , fingerNumber:1/);
@@ -309,6 +323,48 @@ test('writes raw recorder logs and captures serialized context for each live act
         .filter((context) => Number.isInteger(context.actionIndex))
         .map((context) => context.actionIndex),
       [1, 2],
+    );
+    assert.deepEqual(
+      contexts.contexts
+        .filter((context) => Number.isInteger(context.stepIndex))
+        .map((context) => context.evidenceId),
+      ['step-001', 'step-002'],
+    );
+    assert.equal(
+      contexts.contexts
+        .filter((context) => Number.isInteger(context.stepIndex))
+        .every((context) => Number.isFinite(context.captureLatencyMs)),
+      true,
+    );
+    assert.deepEqual(
+      contexts.contexts
+        .filter((context) => Number.isInteger(context.actionIndex))
+        .map((context) => ({
+          type: context.action.type,
+          x1: context.action.x1,
+          y1: context.action.y1,
+          x2: context.action.x2,
+          y2: context.action.y2,
+          durationMs: context.action.durationMs,
+        })),
+      [
+        {
+          type: 'swipe',
+          x1: 100,
+          y1: 700,
+          x2: 100,
+          y2: 300,
+          durationMs: 400,
+        },
+        {
+          type: 'swipe',
+          x1: 300,
+          y1: 700,
+          x2: 300,
+          y2: 400,
+          durationMs: 300,
+        },
+      ],
     );
     await access(join(stopped.outputDir, 'action-001.png'));
     await access(join(stopped.outputDir, 'action-002.png'));
@@ -395,6 +451,7 @@ test('records a trajectory, writes a skill draft, and replays it', async () => {
     const started = await recorder.start({ appId: 'douyin', featureName: '短视频' });
     assert.equal(started.status, 'recording');
     assert.equal(recordingOptions.recordWidgetInfo, true);
+    assert.equal(recordingOptions.saveLayout, true);
 
     const stopped = await recorder.stop(started.id);
     assert.equal(stopped.status, 'stopped');
@@ -431,7 +488,10 @@ test('records a trajectory, writes a skill draft, and replays it', async () => {
     const repaired = await recorder.repair(started.id, { apiKey: 'test-key' });
     assert.equal(repaired.correctionStatus, 'completed');
     assert.equal(repaired.correctedStepCount, 1);
-    assert.match(await readFile(repaired.correctedSkillFile, 'utf8'), /"source": "model_repaired"/);
+    assert.equal(repaired.correctedSemanticStepCount, 1);
+    const correctedArtifact = await readFile(repaired.correctedSkillFile, 'utf8');
+    assert.match(correctedArtifact, /"source": "model_repaired"/);
+    assert.match(correctedArtifact, /"semanticSteps"/);
 
     const correctedReplay = await recorder.replay(started.id);
     assert.equal(correctedReplay.replaySource, 'corrected');
@@ -727,6 +787,738 @@ test('replaces unverified recordings but preserves a recording after successful 
     assert.equal(children.length, 4);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('replays an empty WeChat audio-call recording through the strict workflow skill', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-wechat-voip-'));
+  const child = new FakeChild();
+  const apps = [
+    {
+      id: 'wechat',
+      name: '微信',
+      packageName: 'com.tencent.mm',
+      harmonyBundleName: 'com.tencent.wechat',
+    },
+  ];
+  const workflows = getWorkflowCatalog(apps);
+  let activeLock = null;
+  let executorCall = null;
+  const device = {
+    async beginSession({ owner }) {
+      activeLock = {
+        id: `lock-${owner}`,
+        owner,
+        connected: true,
+        provider: 'hdc',
+        platform: 'harmony',
+        serial: 'harmony-1',
+        screen: { width: 1280, height: 2832 },
+      };
+      return { ...activeLock };
+    },
+    async endSession() {
+      activeLock = null;
+    },
+    getActiveSession() {
+      return activeLock;
+    },
+    async getDeviceStatus() {
+      return {
+        connected: true,
+        provider: 'hdc',
+        platform: 'harmony',
+        serial: 'harmony-1',
+        screen: { width: 1280, height: 2832 },
+      };
+    },
+    async getCurrentFocus() {
+      return { bundleName: 'com.tencent.wechat', activity: 'EntryAbility' };
+    },
+    async getUiTextSnapshot() {
+      return { text: '微信', values: ['微信'], layout: null };
+    },
+    async screenshotPng() {
+      return Buffer.from('png');
+    },
+    async startUiRecording() {
+      return { process: child, provider: 'hdc', serial: 'harmony-1' };
+    },
+    async readUiRecording() {
+      return '';
+    },
+  };
+
+  try {
+    const recorder = new ActionRecorder({
+      device,
+      apps,
+      workflows,
+      recordingsRoot: root,
+      wechatVoipExecutor: async (options) => {
+        executorCall = options;
+        return {
+          validationMode: WECHAT_VOIP_VALIDATION_MODE,
+          validationChecks: [
+            {
+              id: 'call_ended',
+              label: '挂断语音通话',
+              status: 'passed',
+              detail: '已退出通话页',
+            },
+          ],
+          effectiveDurationMs: 3000,
+          replayStepIndex: 9,
+          replaySource: WECHAT_VOIP_VALIDATION_MODE,
+          correctedSteps: [{ type: 'tap', x: 640, y: 2445, delayMs: 0 }],
+          correctionChanges: ['使用严格微信语音通话 skill'],
+          correctionConfidence: 0.99,
+        };
+      },
+    });
+
+    const started = await recorder.start({
+      appId: 'wechat',
+      workflowId: WECHAT_AUDIO_CALL_WORKFLOW_ID,
+      parameters: {
+        duration: { amount: 30, unit: '秒' },
+      },
+    });
+    const stopped = await recorder.stop(started.id);
+    assert.equal(stopped.stepCount, 0);
+    assert.equal(stopped.recordingQuality, 'unusable');
+    assert.equal(stopped.replayAvailable, true);
+
+    const replayed = await recorder.replay(started.id, {
+      validationDurationMs: 5000,
+    });
+    assert.equal(replayed.status, 'replayed');
+    assert.equal(replayed.validationStatus, 'verified');
+    assert.equal(replayed.validationSource, 'workflow_skill');
+    assert.equal(replayed.skillValidationStatus, 'verified');
+    assert.equal(replayed.recordingQuality, 'unusable');
+    assert.equal(replayed.validationMode, WECHAT_VOIP_VALIDATION_MODE);
+    assert.equal(replayed.correctedStepCount, 1);
+    assert.equal(executorCall.callType, 'audio');
+    assert.equal(executorCall.workflowId, WECHAT_AUDIO_CALL_WORKFLOW_ID);
+    assert.deepEqual(executorCall.parameters.duration, {
+      amount: 5,
+      unit: '秒',
+    });
+    assert.deepEqual(replayed.parameters.duration, {
+      amount: 30,
+      unit: '秒',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('replays Kuaishou live recordings through the strict workflow skill', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-kuaishou-live-'));
+  const child = new FakeChild();
+  const apps = [
+    {
+      id: 'kuaishou',
+      name: '快手',
+      packageName: 'com.smile.gifmaker',
+      harmonyBundleName: 'com.kuaishou.hmapp',
+    },
+  ];
+  const workflows = getWorkflowCatalog(apps);
+  let activeLock = null;
+  let executorCall = null;
+  const device = {
+    async beginSession({ owner }) {
+      activeLock = {
+        id: `lock-${owner}`,
+        owner,
+        connected: true,
+        provider: 'hdc',
+        platform: 'harmony',
+        serial: 'harmony-kuaishou',
+        screen: { width: 1280, height: 2832 },
+      };
+      return { ...activeLock };
+    },
+    async endSession() {
+      activeLock = null;
+    },
+    getActiveSession() {
+      return activeLock;
+    },
+    async getDeviceStatus() {
+      return {
+        connected: true,
+        provider: 'hdc',
+        platform: 'harmony',
+        serial: 'harmony-kuaishou',
+        screen: { width: 1280, height: 2832 },
+      };
+    },
+    async getCurrentFocus() {
+      return { bundleName: 'com.kuaishou.hmapp', activity: 'EntryAbility' };
+    },
+    async getUiTextSnapshot() {
+      return { text: '首页\n精选', values: ['首页', '精选'], layout: null };
+    },
+    async screenshotPng() {
+      return Buffer.from('png');
+    },
+    async startUiRecording() {
+      return { process: child, provider: 'hdc', serial: 'harmony-kuaishou' };
+    },
+    async readUiRecording() {
+      return 'click 134 2671';
+    },
+  };
+
+  try {
+    const recorder = new ActionRecorder({
+      device,
+      apps,
+      workflows,
+      recordingsRoot: root,
+      kuaishouLiveExecutor: async (options) => {
+        executorCall = options;
+        return {
+          validationMode: KUAISHOU_LIVE_VALIDATION_MODE,
+          validationChecks: [
+            {
+              id: 'final_live_state',
+              label: '确认任务结束时仍在快手直播间',
+              status: 'passed',
+              detail: '直播间',
+            },
+          ],
+          effectiveDurationMs: 5000,
+          replayStepIndex: 8,
+          replaySource: KUAISHOU_LIVE_VALIDATION_MODE,
+          correctedSteps: [{ type: 'tap', x: 134, y: 2671, delayMs: 0 }],
+          correctionChanges: ['使用严格快手直播 skill'],
+          correctionConfidence: 0.99,
+        };
+      },
+    });
+
+    const started = await recorder.start({
+      appId: 'kuaishou',
+      workflowId: KUAISHOU_LIVE_WORKFLOW_ID,
+      parameters: {
+        duration: { amount: 30, unit: '秒' },
+      },
+    });
+    await recorder.stop(started.id);
+    const replayed = await recorder.replay(started.id, {
+      validationDurationMs: 5000,
+    });
+
+    assert.equal(replayed.status, 'replayed');
+    assert.equal(replayed.validationStatus, 'verified');
+    assert.equal(replayed.validationSource, 'workflow_skill');
+    assert.equal(replayed.skillValidationStatus, 'verified');
+    assert.equal(replayed.validationMode, KUAISHOU_LIVE_VALIDATION_MODE);
+    assert.equal(replayed.correctedStepCount, 1);
+    assert.equal(executorCall.validationDurationMs, 5000);
+    assert.deepEqual(executorCall.parameters.duration, {
+      amount: 5,
+      unit: '秒',
+    });
+    assert.deepEqual(replayed.parameters.duration, {
+      amount: 30,
+      unit: '秒',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('retries a transient Harmony recorder connection conflict once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-retry-'));
+  const children = [];
+  let recoveryCount = 0;
+  const device = {
+    async getDeviceStatus() {
+      return {
+        connected: true,
+        provider: 'hdc',
+        serial: 'harmony-1',
+        screen: { width: 1000, height: 2000 },
+      };
+    },
+    async startUiRecording() {
+      const child = new FakeChild();
+      children.push(child);
+      queueMicrotask(() => {
+        child.stdout.write(
+          children.length === 1
+            ? 'Can not connect to AAMS, RET_ERR_CONNECTION_EXIST\n'
+            : 'Started Recording Successfully...\n',
+        );
+      });
+      return {
+        process: child,
+        provider: 'hdc',
+        serial: 'harmony-1',
+        mode: 'uitest-uiRecord',
+        readyMessage: 'Started Recording Successfully',
+      };
+    },
+    async recoverUiRecording() {
+      recoveryCount += 1;
+    },
+    async readUiRecording() {
+      return 'click 100 200';
+    },
+    async getCurrentFocus() {
+      return { bundleName: 'com.example.app', activity: 'MainAbility' };
+    },
+  };
+
+  try {
+    const recorder = new ActionRecorder({
+      device,
+      apps: [{ id: 'example', name: 'Example' }],
+      recordingsRoot: root,
+    });
+    const started = await recorder.start({
+      appId: 'example',
+      featureName: 'Retry',
+    });
+    const stopped = await recorder.stop(started.id);
+
+    assert.equal(children.length, 2);
+    assert.equal(recoveryCount, 1);
+    assert.equal(stopped.stepCount, 1);
+    assert.match(stopped.diagnostics.join('\n'), /已清理残留状态/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('reports a changed screen with no captured actions as an unusable recording', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-no-events-'));
+  const child = new FakeChild();
+  let snapshotCount = 0;
+  const device = {
+    async getDeviceStatus() {
+      return {
+        connected: true,
+        provider: 'hdc',
+        serial: 'harmony-1',
+        screen: { width: 1000, height: 2000 },
+      };
+    },
+    async startUiRecording() {
+      return { process: child, provider: 'hdc', serial: 'harmony-1' };
+    },
+    async readUiRecording() {
+      return '';
+    },
+    async getCurrentFocus() {
+      return { bundleName: 'com.example.app', activity: 'MainAbility' };
+    },
+    async getUiTextSnapshot() {
+      snapshotCount += 1;
+      return snapshotCount === 1
+        ? { text: '首页\n最近会话', values: ['首页', '最近会话'], layout: null }
+        : { text: '视频通话\n挂断', values: ['视频通话', '挂断'], layout: null };
+    },
+  };
+
+  try {
+    const recorder = new ActionRecorder({
+      device,
+      apps: [{ id: 'example', name: 'Example' }],
+      recordingsRoot: root,
+    });
+    const started = await recorder.start({
+      appId: 'example',
+      featureName: 'No events',
+    });
+    const stopped = await recorder.stop(started.id);
+
+    assert.equal(stopped.recordingQuality, 'unusable');
+    assert.equal(stopped.qualityScore, 0);
+    assert.equal(stopped.integrityStatus, 'unusable');
+    assert.match(stopped.qualityIssues.join('\n'), /界面内容发生明显变化/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('records complete per-action HDC layout evidence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-layout-evidence-'));
+  const child = new FakeChild();
+  const device = {
+    async getDeviceStatus() {
+      return {
+        connected: true,
+        provider: 'hdc',
+        serial: 'harmony-layout',
+        screen: { width: 1000, height: 2000 },
+      };
+    },
+    async startUiRecording() {
+      return {
+        process: child,
+        provider: 'hdc',
+        serial: 'harmony-layout',
+        readUiRecording: async () => 'click 500 1000',
+        readUiRecordingLayouts: async (_output, { outputDir }) => [
+          {
+            actionIndex: 1,
+            remoteFile: '/data/local/tmp/layout_action_1.json',
+            localFile: join(outputDir, 'action-layout-001.json'),
+            summary: [
+              {
+                id: 'open_button',
+                text: '打开',
+                type: 'Button',
+                bounds: { x1: 400, y1: 900, x2: 600, y2: 1100 },
+              },
+            ],
+          },
+        ],
+      };
+    },
+    async getCurrentFocus() {
+      return { bundleName: 'com.example.app', activity: 'MainAbility' };
+    },
+    async getUiTextSnapshot() {
+      return {
+        text: '首页',
+        values: ['首页'],
+        layout: { attributes: { bounds: '[0,0][1000,2000]' } },
+      };
+    },
+    async screenshotPng() {
+      return Buffer.from('png');
+    },
+  };
+
+  try {
+    const recorder = new ActionRecorder({
+      device,
+      apps: [{ id: 'example', name: 'Example' }],
+      recordingsRoot: root,
+    });
+    const started = await recorder.start({
+      appId: 'example',
+      featureName: 'Layout evidence',
+    });
+    child.stdout.write('click , fingerNumber:1 ,\n');
+    child.stdout.write(
+      'finger1:click at Point(x:500, y:1000) at Widget(id:open_button, text:打开, type:Button)\n',
+    );
+    const stopped = await recorder.stop(started.id);
+    const evidence = JSON.parse(
+      await readFile(stopped.evidenceManifestFile, 'utf8'),
+    );
+
+    assert.equal(stopped.recordedLayoutCount, 1);
+    assert.equal(stopped.actionContextCount, 1);
+    assert.equal(stopped.integrityStatus, 'complete');
+    assert.equal(evidence.entries[0].nativeLayoutFile.endsWith('action-layout-001.json'), true);
+    assert.equal(evidence.integrityReport.layoutCount, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('classifies late and orphan Harmony action details without duplicating actions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-detail-timing-'));
+  const child = new FakeChild();
+  const device = {
+    async getDeviceStatus() {
+      return {
+        connected: true,
+        provider: 'hdc',
+        serial: 'harmony-timing',
+        screen: { width: 1000, height: 2000 },
+      };
+    },
+    async startUiRecording() {
+      return {
+        process: child,
+        provider: 'hdc',
+        serial: 'harmony-timing',
+      };
+    },
+    async readUiRecording() {
+      return 'click 100 200';
+    },
+    async getCurrentFocus() {
+      return { bundleName: 'com.example.app', activity: 'MainAbility' };
+    },
+  };
+
+  try {
+    const recorder = new ActionRecorder({
+      device,
+      apps: [{ id: 'example', name: 'Example' }],
+      recordingsRoot: root,
+    });
+    const started = await recorder.start({
+      appId: 'example',
+      featureName: 'Detail timing',
+    });
+    child.stdout.write('finger9:from Point(x:1, y:2) to Widget(id:orphan, text:none, type:Text)\n');
+    child.stdout.write('click , fingerNumber:1 ,\n');
+    await new Promise((resolve) => setTimeout(resolve, 380));
+    child.stdout.write(
+      'finger1:click at Point(x:100, y:200) at Widget(id:late, text:late, type:Button)\n',
+    );
+    const stopped = await recorder.stop(started.id);
+
+    assert.equal(stopped.liveActionEventCount, 1);
+    assert.equal(stopped.actionDetailTiming.headerOnlyCount, 1);
+    assert.equal(stopped.actionDetailTiming.lateDetailCount, 1);
+    assert.equal(stopped.actionDetailTiming.orphanDetailCount, 1);
+    assert.equal(stopped.integrityStatus, 'incomplete');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('persists replay recovery statistics and separate device baselines', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'action-recorder-replay-stats-'));
+  const child = new FakeChild();
+  let activeOwner = '';
+  let replayFocusCalls = 0;
+  let replayTapCount = 0;
+  const device = {
+    async beginSession({ owner }) {
+      activeOwner = owner;
+      return {
+        id: `lock-${owner}`,
+        owner,
+        connected: true,
+        provider: 'hdc',
+        serial: owner.startsWith('replay:') ? 'harmony-target' : 'harmony-source',
+        screen: owner.startsWith('replay:')
+          ? { width: 1200, height: 2400 }
+          : { width: 1000, height: 2000 },
+      };
+    },
+    async endSession() {
+      activeOwner = '';
+    },
+    async startUiRecording() {
+      return {
+        process: child,
+        provider: 'hdc',
+        serial: 'harmony-source',
+      };
+    },
+    async readUiRecording() {
+      return 'click 100 200';
+    },
+    async getScreenSize() {
+      return activeOwner.startsWith('replay:')
+        ? { width: 1200, height: 2400 }
+        : { width: 1000, height: 2000 };
+    },
+    async getCurrentFocus() {
+      if (!activeOwner.startsWith('replay:')) {
+        return {
+          bundleName: 'com.example.app',
+          abilityName: 'MainAbility',
+        };
+      }
+      replayFocusCalls += 1;
+      return {
+        bundleName: 'com.example.app',
+        abilityName: replayFocusCalls >= 3 ? 'ReadyAbility' : 'MainAbility',
+      };
+    },
+    async getUiTextSnapshot() {
+      return {
+        text: '下一步',
+        values: ['下一步'],
+        layout: { attributes: { bounds: '[0,0][1200,2400]' } },
+      };
+    },
+    async tap() {
+      if (activeOwner.startsWith('replay:')) replayTapCount += 1;
+    },
+  };
+
+  try {
+    const apps = [
+      {
+        id: 'example',
+        name: 'Example',
+        packageName: 'com.example.app',
+      },
+    ];
+    const recorder = new ActionRecorder({
+      device,
+      apps,
+      recordingsRoot: root,
+    });
+    const started = await recorder.start({
+      appId: 'example',
+      featureName: 'Recovery stats',
+    });
+    await recorder.stop(started.id);
+    recorder.sessions.get(started.id).semanticSteps = [
+      {
+        type: 'tap',
+        x: 100,
+        y: 200,
+        normalizedX: 0.1,
+        normalizedY: 0.1,
+        coordinateSpace: 'safe_area',
+        target: { texts: ['下一步'], required: false },
+      },
+      {
+        type: 'assert_state',
+        state: {
+          packages: ['com.example.app'],
+          activities: ['ReadyAbility'],
+          textAny: [],
+          nodeIds: [],
+          strength: 2,
+        },
+        timeoutMs: 0,
+        recovery: {
+          relaunchApp: true,
+          retryPreviousAction: true,
+        },
+      },
+    ];
+
+    const replayed = await recorder.replay(started.id);
+    assert.equal(replayed.status, 'replayed');
+    assert.equal(replayTapCount, 2);
+    assert.equal(replayed.replayStats.attempts, 1);
+    assert.equal(replayed.replayStats.passed, 1);
+    assert.equal(replayed.replayStats.recoveredAttempts, 1);
+    assert.equal(replayed.deviceBaselines.length, 2);
+
+    const reloaded = new ActionRecorder({
+      device,
+      apps,
+      recordingsRoot: root,
+    });
+    await reloaded.loadFromDisk();
+    const restored = reloaded.snapshot(started.id);
+    assert.equal(restored.replayStats.attempts, 1);
+    assert.equal(restored.replayStats.recoveredAttempts, 1);
+    assert.equal(restored.deviceBaselines.length, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('writes failed-start evidence and rebuilds missing integrity data for old recordings', async () => {
+  const failedRoot = await mkdtemp(join(tmpdir(), 'action-recorder-failed-evidence-'));
+  const legacyRoot = await mkdtemp(join(tmpdir(), 'action-recorder-legacy-evidence-'));
+  try {
+    const failedRecorder = new ActionRecorder({
+      device: {
+        async getDeviceStatus() {
+          return {
+            connected: true,
+            provider: 'hdc',
+            serial: 'harmony-failed',
+            screen: { width: 1000, height: 2000 },
+          };
+        },
+        async startUiRecording() {
+          throw new Error('recorder unavailable');
+        },
+      },
+      apps: [{ id: 'example', name: 'Example' }],
+      recordingsRoot: failedRoot,
+    });
+    await assert.rejects(
+      failedRecorder.start({
+        appId: 'example',
+        featureName: 'Failed evidence',
+      }),
+      /recorder unavailable/,
+    );
+    const failed = failedRecorder.list()[0];
+    const failedEvidence = JSON.parse(
+      await readFile(failed.evidenceManifestFile, 'utf8'),
+    );
+    assert.equal(failed.integrityStatus, 'unusable');
+    assert.equal(failedEvidence.integrityReport.status, 'unusable');
+    assert.deepEqual(failedEvidence.entries, []);
+
+    const child = new FakeChild();
+    const legacyDevice = {
+      async getDeviceStatus() {
+        return {
+          connected: true,
+          provider: 'adb',
+          serial: 'android-legacy',
+          screen: { width: 1000, height: 2000 },
+        };
+      },
+      async startUiRecording() {
+        return { process: child, provider: 'adb', serial: 'android-legacy' };
+      },
+      async readUiRecording() {
+        return 'click 100 200';
+      },
+      async getCurrentFocus() {
+        return { packageName: 'com.example.app', activity: 'MainActivity' };
+      },
+      async getUiTextSnapshot() {
+        return {
+          text: '首页',
+          values: ['首页'],
+          layout: null,
+        };
+      },
+      async screenshotPng() {
+        return Buffer.from('png');
+      },
+    };
+    const apps = [{ id: 'example', name: 'Example' }];
+    const legacyRecorder = new ActionRecorder({
+      device: legacyDevice,
+      apps,
+      recordingsRoot: legacyRoot,
+    });
+    const started = await legacyRecorder.start({
+      appId: 'example',
+      featureName: 'Legacy evidence',
+    });
+    child.stdout.write('click , fingerNumber:1 ,\n');
+    child.stdout.write(
+      'finger1:click at Point(x:100, y:200) at Widget(id:legacy, text:打开, type:Button)\n',
+    );
+    const stopped = await legacyRecorder.stop(started.id);
+    const metadata = JSON.parse(await readFile(stopped.trajectoryFile, 'utf8'));
+    delete metadata.semanticSteps;
+    delete metadata.evidenceManifest;
+    delete metadata.integrityStatus;
+    delete metadata.integrityIssues;
+    delete metadata.integrityReport;
+    await writeFile(
+      stopped.trajectoryFile,
+      `${JSON.stringify(metadata, null, 2)}\n`,
+      'utf8',
+    );
+
+    const reloaded = new ActionRecorder({
+      device: legacyDevice,
+      apps,
+      recordingsRoot: legacyRoot,
+    });
+    await reloaded.loadFromDisk();
+    const restored = reloaded.snapshot(started.id);
+    assert.equal(restored.semanticStepCount > 0, true);
+    assert.equal(restored.evidenceManifest.length, 1);
+    assert.notDeepEqual(restored.integrityReport, {});
+    assert.equal(restored.integrityStatus, 'complete');
+  } finally {
+    await rm(failedRoot, { recursive: true, force: true });
+    await rm(legacyRoot, { recursive: true, force: true });
   }
 });
 

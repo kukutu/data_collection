@@ -6,23 +6,31 @@ import { TaskManager } from '../server/src/harness.js';
 import { getWorkflowCatalog } from '../server/src/workflow-registry.js';
 
 test('TaskManager pauses at manual confirmation and continues after confirmation', async () => {
-  const adb = createFakeAdb();
+  const adb = createFakeAdb('com.tencent.qqlive');
   const manager = new TaskManager({ adb, apps: loadApps() });
-  const started = manager.start({ taskText: '刷8秒小红书视频', parseMode: 'rules' });
+  const started = manager.start({ taskText: '看1秒腾讯视频', parseMode: 'rules' });
 
   const waiting = await waitForTask(manager, started.id, (task) => task.status === 'waiting_confirmation');
 
   assert.equal(waiting.status, 'waiting_confirmation');
   assert.equal(manager.currentSnapshot().id, started.id);
   assert.equal(manager.currentSnapshot().status, 'waiting_confirmation');
-  assert.match(waiting.pendingConfirmation.message, /手动点入/);
-  assert.equal(adb.swipes.length, 0, 'XHS should not swipe before manual confirmation');
+  assert.match(waiting.pendingConfirmation.message, /手动打开要观看的腾讯视频/);
+  assert.equal(waiting.pendingConfirmation.confirmLabel, '我已点入视频，继续');
+  assert.equal(
+    adb.keyevents.includes('KEYCODE_MEDIA_PLAY'),
+    false,
+    'Tencent Video should not resume playback before manual confirmation',
+  );
 
   assert.equal(manager.continue(started.id), true);
 
   const completed = await waitForTask(manager, started.id, (task) => task.status === 'completed');
   assert.equal(completed.status, 'completed');
-  assert.ok(adb.swipes.length > 0, 'feed swipes should happen after confirmation');
+  assert.ok(
+    adb.keyevents.includes('KEYCODE_MEDIA_PLAY'),
+    'Tencent Video should resume playback after confirmation',
+  );
 });
 
 test('completed tasks do not automatically mark an app as tested', async () => {
@@ -72,6 +80,7 @@ function createFakeAdb(focusPackage = 'com.xingin.xhs') {
   let screenshotCount = 0;
   const adb = {
     swipes: [],
+    keyevents: [],
     deviceLocks: [],
     async beginSession({ owner }) {
       const lock = {
@@ -91,6 +100,10 @@ function createFakeAdb(focusPackage = 'com.xingin.xhs') {
     },
     async forceStopPackage() {},
     async launchPackage() {},
+    async keyevent(code) {
+      adb.keyevents.push(code);
+    },
+    async tapResource() {},
     async assertNoSensitivePrompt() {},
     async tapText() {},
     async tapTextInRegion() {},
@@ -100,6 +113,12 @@ function createFakeAdb(focusPackage = 'com.xingin.xhs') {
     },
     async getCurrentFocus() {
       return { packageName: focusPackage, activity: 'com.example.MainActivity' };
+    },
+    async getDisplayOrientation() {
+      return { isLandscape: true, raw: 'landscape' };
+    },
+    async getMediaPlaybackState() {
+      return { isPlaying: true, stateName: 'PLAYING', stateCode: 3 };
     },
     async getUiTextSnapshot() {
       return { text: 'RED' };

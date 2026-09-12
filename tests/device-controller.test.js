@@ -206,6 +206,68 @@ test('prefers a UI target center over fallback coordinates', async () => {
   assert.equal(taps[0].resolvedBy, 'ui-node');
 });
 
+test('uses generic UI lookup when a duplicate resource node is outside the target region', async () => {
+  const taps = [];
+  const uiQueries = [];
+  const controller = createDeviceController({
+    adbAdapter: {
+      async getDeviceStatus() {
+        return { connected: false, provider: 'adb' };
+      },
+    },
+    hdcAdapter: {
+      async getDeviceStatus() {
+        return {
+          connected: true,
+          provider: 'hdc',
+          serial: 'harmony-1',
+          screen: { width: 1000, height: 2000 },
+        };
+      },
+      async findResourceNode() {
+        return {
+          attributes: { id: 'send_button', type: 'Button' },
+          centerX: 80,
+          centerY: 80,
+        };
+      },
+      async findUiNode(query) {
+        uiQueries.push(query);
+        return {
+          attributes: { resourceId: 'send_button', type: 'Button' },
+          centerX: 800,
+          centerY: 1600,
+        };
+      },
+      async tap(point) {
+        taps.push(point);
+      },
+    },
+  });
+
+  await controller.getDeviceStatus();
+  await controller.tap({
+    x: 500,
+    y: 1000,
+    target: {
+      id: 'send_button',
+      types: ['Button'],
+      region: { minX: 600, minY: 1400, maxX: 1000, maxY: 1900 },
+    },
+  });
+
+  assert.deepEqual(uiQueries[0].ids, ['send_button']);
+  assert.deepEqual(uiQueries[0].region, {
+    minX: 600,
+    minY: 1400,
+    maxX: 1000,
+    maxY: 1900,
+  });
+  assert.equal(taps[0].x, 800);
+  assert.equal(taps[0].y, 1600);
+  assert.equal(taps[0].resolvedBy, 'ui-node');
+});
+
 test('locks the selected device for a session and releases it afterward', async () => {
   const targetSerials = [];
   let activeSerial = 'harmony-1';

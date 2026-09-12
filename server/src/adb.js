@@ -36,6 +36,7 @@ function execAdb(args, options = {}) {
         encoding: options.encoding ?? 'utf8',
         timeout: options.timeoutMs ?? 15000,
         maxBuffer: options.maxBuffer ?? 20 * 1024 * 1024,
+        windowsHide: true,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -192,6 +193,11 @@ export async function startActivity({ packageName, activityName }) {
 
 export async function forceStopPackage(packageName) {
   return adbText(['shell', 'am', 'force-stop', packageName]);
+}
+
+export async function uninstallPackage(packageName) {
+  if (!packageName) throw new Error('uninstallPackage requires packageName');
+  return adbText(['shell', 'pm', 'uninstall', packageName], { timeoutMs: 30000 });
 }
 
 export async function keyevent(code) {
@@ -374,6 +380,81 @@ export async function findTextNode(texts, { partial = false, region } = {}) {
   return findTextNodeInXml(xml, texts, { partial, region });
 }
 
+export async function findUiNode({
+  types = [],
+  ids = [],
+  keys = [],
+  clickable,
+  region,
+} = {}) {
+  const xml = await getUiXml();
+  return findUiNodeInXml(xml, {
+    types,
+    ids,
+    keys,
+    clickable,
+    region,
+  });
+}
+
+export function findUiNodeInXml(
+  xml,
+  {
+    types = [],
+    ids = [],
+    keys = [],
+    clickable,
+    region,
+  } = {},
+) {
+  const expectedTypes = normalizeExpectedValues(types);
+  const expectedIds = normalizeExpectedValues(ids);
+  const expectedKeys = normalizeExpectedValues(keys);
+
+  for (const match of String(xml || '').matchAll(/<node\b[^>]*>/g)) {
+    const raw = match[0];
+    const node = parseAndroidUiNode(raw);
+    if (!node) continue;
+    if (
+      expectedTypes.length &&
+      ![node.attributes.class, node.attributes.className, node.attributes.type].some(
+        (value) => matchesExpectedValue(value, expectedTypes),
+      )
+    ) {
+      continue;
+    }
+    if (
+      expectedIds.length &&
+      ![
+        node.attributes['resource-id'],
+        node.attributes.resourceId,
+        node.attributes.id,
+        node.attributes['accessibility-id'],
+      ].some((value) => matchesExpectedValue(value, expectedIds))
+    ) {
+      continue;
+    }
+    if (
+      expectedKeys.length &&
+      ![node.attributes.key, node.attributes['content-desc']].some((value) =>
+        matchesExpectedValue(value, expectedKeys),
+      )
+    ) {
+      continue;
+    }
+    if (
+      typeof clickable === 'boolean' &&
+      parseBooleanAttr(node.attributes.clickable) !== clickable
+    ) {
+      continue;
+    }
+    if (region && !isPointInRegion(node.centerX, node.centerY, region)) continue;
+    return node;
+  }
+
+  return null;
+}
+
 function findTextNodeInXml(xml, texts, { partial = false, region } = {}) {
   const candidates = Array.isArray(texts) ? texts : [texts];
 
@@ -414,6 +495,44 @@ function isPointInRegion(x, y, region) {
   const maxX = Number(region.maxX ?? region.x2 ?? Number.POSITIVE_INFINITY);
   const maxY = Number(region.maxY ?? region.y2 ?? Number.POSITIVE_INFINITY);
   return x >= minX && x <= maxX && y >= minY && y <= maxY;
+}
+
+function parseAndroidUiNode(raw) {
+  const bounds = String(raw).match(
+    /bounds="\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]"/,
+  );
+  if (!bounds) return null;
+  const [x1, y1, x2, y2] = bounds.slice(1).map(Number);
+  const attributes = {};
+  for (const match of String(raw).matchAll(/([A-Za-z0-9_:-]+)="([^"]*)"/g)) {
+    attributes[match[1]] = decodeXml(match[2]);
+  }
+  return {
+    attributes,
+    bounds: { x1, y1, x2, y2 },
+    centerX: Math.round((x1 + x2) / 2),
+    centerY: Math.round((y1 + y2) / 2),
+    raw,
+  };
+}
+
+function normalizeExpectedValues(values) {
+  if (!values) return [];
+  return Array.isArray(values) ? values : [values];
+}
+
+function matchesExpectedValue(value, expectedValues) {
+  const actual = String(value || '');
+  return expectedValues.some((expected) => {
+    if (!(expected instanceof RegExp)) return actual === String(expected);
+    expected.lastIndex = 0;
+    return expected.test(actual);
+  });
+}
+
+function parseBooleanAttr(value) {
+  if (typeof value === 'boolean') return value;
+  return String(value).toLowerCase() === 'true';
 }
 
 export async function getUiTextSnapshot() {
@@ -526,6 +645,7 @@ export const adb = {
   getDisplayOrientation,
   getMediaPlaybackState,
   forceStopPackage,
+  uninstallPackage,
   launchPackage,
   startUiRecording,
   readUiRecording,
@@ -542,6 +662,7 @@ export const adb = {
   tapResource,
   findResourceNode,
   findTextNode,
+  findUiNode,
   getUiTextSnapshot,
   screenshotPng,
 };

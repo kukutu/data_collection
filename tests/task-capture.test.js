@@ -114,6 +114,7 @@ test('TaskManager does not start capture for a blocked task', async () => {
 test('infers the capture business directory from task intent', () => {
   assert.equal(inferBusinessName({ intent: 'watch_feed' }), '短视频');
   assert.equal(inferBusinessName({ intent: 'watch_live' }), '直播');
+  assert.equal(inferBusinessName({ intent: 'tencent_quick_meeting' }), '会议');
   assert.equal(inferBusinessName({ intent: 'ai_chat' }), 'AI应用');
   assert.equal(inferBusinessName({ intent: 'launch_app' }), '启动');
 });

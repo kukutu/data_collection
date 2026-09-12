@@ -31,6 +31,7 @@
     "name": "B站",
     "aliases": ["B站", "哔哩哔哩", "bilibili", "B站短视频", "B站直播"],
     "packageName": "tv.danmaku.bili",
+    "harmonyBundleName": "yylx.danmaku.bili",
     "categories": ["短视频", "长视频", "直播"],
     "skill": "bilibili_playback"
   },
@@ -39,6 +40,7 @@
     "name": "西瓜视频",
     "aliases": ["西瓜视频"],
     "packageName": "com.ss.android.article.video",
+    "harmonyBundleName": "com.ss.hm.article.video",
     "categories": ["短视频"],
     "skill": "short_video_feed"
   },
@@ -49,7 +51,7 @@
     "packageName": "com.ss.android.article.news",
     "harmonyBundleName": "com.ss.hm.article.news",
     "categories": ["短视频"],
-    "skill": "launch_only"
+    "skill": "short_video_feed"
   },
   {
     "id": "wechat",
@@ -67,15 +69,16 @@
     "packageName": "com.tencent.mobileqq",
     "harmonyBundleName": "com.tencent.mqq",
     "categories": ["VoIP"],
-    "skill": "launch_only"
+    "skill": "qq_voip_call"
   },
   {
     "id": "dingtalk",
     "name": "钉钉",
     "aliases": ["钉钉", "钉钉会议", "钉钉音视频通话"],
     "packageName": "com.alibaba.android.rimet",
+    "harmonyBundleName": "com.dingtalk.hmos",
     "categories": ["VoIP", "会议"],
-    "skill": "launch_only"
+    "skill": "dingtalk_quick_meeting"
   },
   {
     "id": "wecom",
@@ -84,7 +87,7 @@
     "packageName": "com.tencent.wework",
     "harmonyBundleName": "com.tencent.wework.hmos",
     "categories": ["VoIP"],
-    "skill": "launch_only"
+    "skill": "wecom_voip_call"
   },
   {
     "id": "meetime",
@@ -109,16 +112,18 @@
     "name": "飞书",
     "aliases": ["飞书", "飞书会议"],
     "packageName": "com.ss.android.lark",
+    "harmonyBundleName": "com.ss.feishu",
     "categories": ["会议"],
-    "skill": "launch_only"
+    "skill": "feishu_quick_meeting"
   },
   {
     "id": "welink",
     "name": "welink",
     "aliases": ["welink", "welink会议", "welink发图/发视频"],
     "packageName": "com.huawei.works",
+    "harmonyBundleName": "com.huawei.it.welink",
     "categories": ["会议", "传输"],
-    "skill": "launch_only"
+    "skill": "welink_voip_call"
   },
   {
     "id": "tencent-video",
@@ -136,7 +141,7 @@
     "packageName": "com.qiyi.video",
     "harmonyBundleName": "com.qiyi.video.hmy",
     "categories": ["长视频", "直播"],
-    "skill": "launch_only"
+    "skill": "live_entry"
   },
   {
     "id": "youku",
@@ -159,16 +164,18 @@
     "name": "咪咕视频",
     "aliases": ["咪咕视频"],
     "packageName": "com.cmcc.cmvideo",
+    "harmonyBundleName": "com.cmcc.cmvideohm",
     "categories": ["长视频", "直播"],
-    "skill": "launch_only"
+    "skill": "live_entry"
   },
   {
     "id": "yangshipin",
     "name": "央视频",
     "aliases": ["央视频"],
     "packageName": "com.cctv.yangshipin.app.androidp",
+    "harmonyBundleName": "com.cctv.yangshipin.app.harmonyp",
     "categories": ["长视频"],
-    "skill": "launch_only"
+    "skill": "live_entry"
   },
   {
     "id": "huawei-video",
@@ -184,16 +191,18 @@
     "name": "虎牙",
     "aliases": ["虎牙", "虎牙直播"],
     "packageName": "com.duowan.kiwi",
+    "harmonyBundleName": "com.duowan.hyhos",
     "categories": ["直播"],
-    "skill": "launch_only"
+    "skill": "live_entry"
   },
   {
     "id": "douyu",
     "name": "斗鱼",
     "aliases": ["斗鱼", "斗鱼直播"],
     "packageName": "air.tv.douyu.android",
+    "harmonyBundleName": "com.douyu.ho.app",
     "categories": ["直播"],
-    "skill": "launch_only"
+    "skill": "live_entry"
   },
   {
     "id": "taobao",
@@ -227,8 +236,9 @@
     "name": "微博",
     "aliases": ["微博"],
     "packageName": "com.sina.weibo",
-    "categories": ["社交"],
-    "skill": "launch_only"
+    "harmonyBundleName": "com.sina.weibo.stage",
+    "categories": ["社交", "直播"],
+    "skill": "live_entry"
   },
   {
     "id": "alipay",
@@ -269,6 +279,7 @@
     "name": "王者荣耀",
     "aliases": ["王者荣耀"],
     "packageName": "com.tencent.tmgp.sgame",
+    "harmonyBundleName": "com.tencent.tmgp.sgame.hw",
     "categories": ["游戏"],
     "skill": "launch_only"
   },
@@ -384,8 +395,9 @@
     "name": "迅雷",
     "aliases": ["迅雷"],
     "packageName": "com.xunlei.downloadprovider",
+    "harmonyBundleName": "com.xunlei.thunder",
     "categories": ["上传下载"],
-    "skill": "launch_only"
+    "skill": "xunlei_upload_media"
   },
   {
     "id": "baidu-netdisk",
@@ -414,11 +426,30 @@
   },
   {
     "id": "deepseek",
-    "name": "deepseek",
+    "name": "DeepSeek",
     "aliases": ["deepseek", "DeepSeek", "深度求索"],
     "packageName": "com.deepseek.chat",
+    "harmonyBundleName": "com.deepseek.chat",
+    "harmonyLaunch": {
+      "moduleName": "entry",
+      "abilityName": "com.deepseek.chat.MainActivity",
+      "compatibility": true
+    },
+    "harmonyCompatibilityHostBundleName": "com.huawei.shell_assistant",
     "categories": ["AI应用"],
-    "skill": "launch_only"
+    "skill": "deepseek_chat",
+    "skillConfig": {
+      "coordinates": {
+        "input": {
+          "xRatio": 0.5,
+          "yRatio": 0.85
+        },
+        "send": {
+          "xRatio": 0.875,
+          "yRatio": 0.565
+        }
+      }
+    }
   },
   {
     "id": "qianwen",
@@ -426,8 +457,27 @@
     "aliases": ["千问", "通义千问"],
     "packageName": "com.aliyun.tongyi",
     "harmonyBundleName": "com.aliyun.tongyi4ohos",
+    "harmonyLaunch": {
+      "moduleName": "entry",
+      "abilityName": "EntryAbility"
+    },
     "categories": ["AI应用"],
-    "skill": "ai_chat"
+    "skill": "qianwen_chat",
+    "skillConfig": {
+      "coordinates": {
+        "input": {
+          "xRatio": 0.461,
+          "yRatio": 0.924
+        },
+        "send": {
+          "xRatio": 0.894,
+          "yRatio": 0.564
+        }
+      },
+      "resources": {
+        "input": "ai_chat_textarea_input_keys_0"
+      }
+    }
   },
   {
     "id": "xiaoyi",
@@ -436,6 +486,13 @@
     "packageName": "com.huawei.vassistant",
     "harmonyBundleName": "com.huawei.hmos.vassistant",
     "categories": ["AI应用"],
-    "skill": "launch_only"
+    "skill": "xiaoyi_chat",
+    "skillConfig": {
+      "resources": {
+        "launcherIcon": "AppIconCommonView_com.huawei.hmos.vassistant.launcher.VoiceAbility",
+        "input": "id_text_input",
+        "send": "send_hot_area"
+      }
+    }
   }
 ]

@@ -58,18 +58,40 @@ const CATEGORY_DEFINITIONS = [
       ['wecom', '视频通话'],
       ['meetime', '音频通话'],
       ['meetime', '视频通话'],
+      ['welink', '音频通话'],
+      ['welink', '视频通话'],
     ],
     functionId: 'call',
-    commandTemplate: '在{appName}向第一个联系人发起{functionName}',
-    params: [],
+    commandTemplate: '在{appName}向第一个联系人发起{functionName} {duration}',
+    params: [durationParam({ label: '通话时长' })],
     variants: {
+      'dingtalk:视频通话': {
+        functionId: 'video-call',
+        commandTemplate: '在{appName}向消息页第一个人发起视频通话 {duration} 摄像头{camera} 共享屏幕{shareScreen}',
+        params: [durationParam({ label: '通话时长' }), booleanParam('camera', '开启摄像头'), booleanParam('shareScreen', '共享屏幕')],
+      },
+      'wecom:视频通话': {
+        functionId: 'video-call',
+        commandTemplate: '在{appName}向消息页第一个人发起视频通话 {duration} 摄像头{camera} 共享屏幕{shareScreen}',
+        params: [durationParam({ label: '通话时长' }), booleanParam('camera', '开启摄像头'), booleanParam('shareScreen', '共享屏幕')],
+      },
+      'welink:音频通话': {
+        functionId: 'audio-call',
+        commandTemplate: '在{appName}向消息页第一个联系人发起音频通话 {duration} 开视频{camera} 共享屏幕{shareScreen}',
+        params: [durationParam({ label: '通话时长' }), booleanParam('camera', '开启摄像头'), booleanParam('shareScreen', '共享屏幕')],
+      },
+      'welink:视频通话': {
+        functionId: 'video-call',
+        commandTemplate: '在{appName}向消息页第一个联系人发起视频通话 {duration} 开视频{camera} 共享屏幕{shareScreen}',
+        params: [durationParam({ label: '通话时长' }), booleanParam('camera', '开启摄像头'), booleanParam('shareScreen', '共享屏幕')],
+      },
       音频通话: {
         functionId: 'audio-call',
-        commandTemplate: '在{appName}向第一个联系人发起音频通话',
+        commandTemplate: '在{appName}向第一个联系人发起音频通话 {duration}',
       },
       视频通话: {
         functionId: 'video-call',
-        commandTemplate: '在{appName}向第一个联系人发起视频通话',
+        commandTemplate: '在{appName}向第一个联系人发起视频通话 {duration}',
       },
     },
   },
@@ -90,6 +112,39 @@ const CATEGORY_DEFINITIONS = [
     commandTemplate: '在{appName}{functionName}{meetingParams}',
     params: [],
     variants: {
+      'dingtalk:快速会议': {
+        functionId: 'quick-meeting',
+        commandTemplate: '在{appName}发起快速会议 类型{meetingType} {duration} 摄像头{camera} 共享屏幕{shareScreen}',
+        params: [
+          selectParam('meetingType', '会议类型', [
+            { value: 'video', label: '视频会议' },
+            { value: 'audio', label: '语音会议' },
+          ], 'video'),
+          durationParam({ label: '会议时长' }),
+          { ...booleanParam('camera', '开启摄像头'), visibleWhen: { parameterId: 'meetingType', equals: 'video' } },
+          booleanParam('shareScreen', '共享屏幕'),
+        ],
+      },
+      'dingtalk:加入会议': {
+        functionId: 'join-meeting',
+        commandTemplate: '在{appName}加入会议 会议号{meetingId} {duration} 摄像头{camera} 共享屏幕{shareScreen}',
+        params: [
+          textParam('meetingId', '会议号', { required: true, placeholder: '输入会议号' }),
+          durationParam({ label: '会议时长' }),
+          booleanParam('camera', '开启摄像头'),
+          booleanParam('shareScreen', '共享屏幕'),
+        ],
+      },
+      'feishu:加入会议': {
+        functionId: 'join-meeting',
+        commandTemplate: '在{appName}加入会议 会议号{meetingId} {duration} 摄像头{camera} 共享屏幕{shareScreen}',
+        params: [
+          textParam('meetingId', '会议号', { required: true, placeholder: '输入9位会议号' }),
+          durationParam({ label: '会议时长' }),
+          booleanParam('camera', '开启摄像头'),
+          booleanParam('shareScreen', '共享屏幕'),
+        ],
+      },
       '快速会议': {
         functionId: 'quick-meeting',
         params: [
@@ -103,16 +158,17 @@ const CATEGORY_DEFINITIONS = [
         functionId: 'join-meeting',
         params: [
           textParam('meetingId', '会议号', { required: true, placeholder: '输入会议号' }),
+          durationParam({ label: '会议时长' }),
           textParam('meetingPassword', '会议密码', {
-            required: true,
+            required: false,
             sensitive: true,
-            placeholder: '输入会议密码',
+            placeholder: '无密码可留空',
           }),
           booleanParam('camera', '开启摄像头'),
           booleanParam('shareScreen', '共享屏幕'),
         ],
         commandTemplate:
-          '在{appName}加入会议 会议号{meetingId} 密码{meetingPassword} 摄像头{camera} 共享屏幕{shareScreen}',
+          '在{appName}加入会议 会议号{meetingId} {duration} 密码{meetingPassword} 摄像头{camera} 共享屏幕{shareScreen}',
       },
     },
   },
@@ -147,13 +203,38 @@ const CATEGORY_DEFINITIONS = [
       ['xiaohongshu', '小红书直播'],
       ['weibo', '微博直播'],
       ['migu-video', '咪咕直播'],
-      ['iqiyi', '爱奇艺体育直播'],
+      ['iqiyi', '爱奇艺直播'],
       ['yangshipin', '央视频直播'],
       ['tencent-sports', '腾讯体育直播'],
     ],
     functionId: 'live-browse',
-    commandTemplate: '看{duration}{appName}直播',
-    params: [durationParam({ label: '观看时长' })],
+    variants: {
+      'migu-video:咪咕直播': {
+        commandTemplate: '看{duration}{appName}直播，人工进入直播间后确认',
+        params: [durationParam({ label: '观看时长' })],
+      },
+      'tencent-sports:腾讯体育直播': {
+        commandTemplate: '看{duration}{appName}直播，人工进入直播间后确认',
+        params: [durationParam({ label: '观看时长' })],
+      },
+      'yangshipin:央视频直播': {
+        commandTemplate: '看{duration}{appName}直播，每{switchInterval}切换一次直播',
+        params: [
+          durationParam({ label: '观看时长' }),
+          durationParam({ id: 'switchInterval', label: '切换间隔', defaultValue: 3, defaultUnit: '分钟' }),
+        ],
+      },
+    },
+    commandTemplate: '看{duration}{appName}直播，每{switchInterval}下滑一次',
+    params: [
+      durationParam({ label: '观看时长' }),
+      durationParam({
+        id: 'switchInterval',
+        label: '下滑间隔',
+        defaultValue: 3,
+        defaultUnit: '分钟',
+      }),
+    ],
   },
   {
     id: 'transfer',
@@ -221,11 +302,52 @@ const CATEGORY_DEFINITIONS = [
     items: [
       ['app-store', '应用下载'],
       ['xunlei', '文件下载'],
-      ['baidu-netdisk', '文件上传下载'],
+      ['xunlei', '上传图片或视频'],
+      ['baidu-netdisk', '文件下载'],
+      ['baidu-netdisk', '文件上传'],
     ],
     functionId: 'upload-download',
     commandTemplate: '打开{appName}执行{functionName} 目标{target}',
     params: [textParam('target', '文件或应用目标', { required: true })],
+    variants: {
+      'app-store:应用下载': {
+        functionId: 'download-app',
+        commandTemplate: '在{appName}下载{targetApp}，完成或运行{duration}后删除应用',
+        params: [
+          textParam('targetApp', '目标应用', {
+            required: true,
+            defaultValue: '王者荣耀',
+          }),
+          durationParam({ label: '下载时长', defaultValue: 30, defaultUnit: '秒' }),
+        ],
+      },
+      'xunlei:上传图片或视频': {
+        functionId: 'upload-media',
+        commandTemplate: '在{appName}传输中上传相册第一项图片或视频',
+        params: [],
+      },
+      'xunlei:文件下载': {
+        functionId: 'download-file',
+        commandTemplate: '在{appName}下载{magnetUrl}，运行{duration}后删除下载内容',
+        params: [
+          textParam('magnetUrl', '磁力链接', {
+            required: true,
+            defaultValue: 'magnet:?xt=urn:btih:8C9F4DB08497563EF6EB01CF81199F645DA0954B',
+          }),
+          durationParam({ label: '下载时长', defaultValue: 30, defaultUnit: '秒' }),
+        ],
+      },
+      'baidu-netdisk:文件下载': {
+        functionId: 'download-file',
+        commandTemplate: '在{appName}文件页选择第一个文件夹下载，运行{duration}后清除并删除本地文件',
+        params: [durationParam({ label: '下载时长', defaultValue: 30, defaultUnit: '秒' })],
+      },
+      'baidu-netdisk:文件上传': {
+        functionId: 'upload-file',
+        commandTemplate: '在{appName}上传{mediaType}',
+        params: [{ id: 'mediaType', label: '上传类型', type: 'select', defaultValue: 'image', options: [{ value: 'image', label: '图片' }, { value: 'document', label: '文档' }, { value: 'video', label: '视频', disabled: true }] }],
+      },
+    },
   },
   {
     id: 'ai',
@@ -246,11 +368,44 @@ const CATEGORY_DEFINITIONS = [
 ];
 
 const VERIFIED_WORKFLOW_IDS = new Set([
+  'voip:dingtalk:audio-call',
+  'voip:dingtalk:video-call',
+  'meeting:feishu:join-meeting',
+  'meeting:feishu:quick-meeting',
+  'meeting:dingtalk:join-meeting',
+  'meeting:dingtalk:quick-meeting',
+  'short-video:bilibili:short-video-feed',
+  'voip:qq:audio-call',
+  'voip:qq:video-call',
+  'meeting:tencent-meeting:join-meeting',
   'short-video:douyin:short-video-feed',
+  'short-video:kuaishou:short-video-feed',
   'short-video:wechat:short-video-feed',
+  'short-video:xiaohongshu:short-video-feed',
+  'short-video:xigua:short-video-feed',
+  'short-video:toutiao:short-video-feed',
+  'live:douyin:live-browse',
   'live:wechat:live-browse',
+  'live:bilibili:live-browse',
+  'live:huya:live-browse',
+  'live:douyu:live-browse',
+  'live:taobao:live-browse',
+  'live:jd:live-browse',
+  'live:yangshipin:live-browse',
+  'live:weibo:live-browse',
+  'live:xiaohongshu:live-browse',
+  'live:iqiyi:live-browse',
+  'live:migu-video:live-browse',
+  'live:tencent-sports:live-browse',
   'transfer:wechat:send-messages',
   'ai:doubao:ai-chat',
+  'ai:deepseek:ai-chat',
+  'ai:qianwen:ai-chat',
+  'ai:xiaoyi:ai-chat',
+  'upload-download:xunlei:upload-media',
+  'upload-download:xunlei:download-file',
+  'upload-download:app-store:download-app',
+  'upload-download:baidu-netdisk:download-file',
 ]);
 
 export function getWorkflowCatalog(

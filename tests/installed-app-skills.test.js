@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 
 import { buildAiChatPlan } from '../server/src/skills/ai-chat.js';
 import { buildAmapNavigationPlan } from '../server/src/skills/amap-navigation.js';
+import { buildDeepseekChatPlan } from '../server/src/skills/deepseek-chat.js';
 import { buildDoubaoChatPlan } from '../server/src/skills/doubao-chat.js';
 import { buildGenericMediaPlaybackPlan } from '../server/src/skills/generic-media.js';
 import { buildLiveEntryPlan } from '../server/src/skills/live-entry.js';
 import { buildLiveStreamPlan } from '../server/src/skills/live-stream.js';
+import { buildQianwenChatPlan } from '../server/src/skills/qianwen-chat.js';
 import { buildShortVideoPlan } from '../server/src/skills/short-video.js';
 import { buildTencentVideoPlaybackPlan } from '../server/src/skills/tencent-video.js';
 import { buildWechatChannelsPlan } from '../server/src/skills/wechat-channels.js';
+import { buildXiaoyiChatPlan } from '../server/src/skills/xiaoyi-chat.js';
 import {
   buildWechatMessagesPlan,
   DEFAULT_WECHAT_MESSAGES,
@@ -159,64 +162,92 @@ test('WeChat message plan selects the first conversation and loops a large messa
   });
 });
 
-test('XHS short video plan hands off to the user before feed browsing', () => {
+test('XHS short video plan enters the RED feed and first video automatically', () => {
   const plan = buildShortVideoPlan({
     app: { id: 'xiaohongshu', name: '小红书', packageName: 'com.xingin.xhs' },
-    durationMs: 20_000,
+    durationMs: 30_000,
     screen,
   });
 
   const confirmIndex = plan.findIndex((step) => step.type === 'manual_confirm');
+  const discoverTapIndex = plan.findIndex(
+    (step) => step.type === 'tap_text_region' && step.texts.includes('发现'),
+  );
+  const redTapIndex = plan.findIndex(
+    (step) => step.type === 'tap_text_region' && step.texts.includes('RED'),
+  );
+  const redFallbackIndex = plan.findIndex(
+    (step) => step.type === 'tap' && step.label.includes('兜底点击小红书顶部 RED'),
+  );
+  const channelAssertIndex = plan.findIndex(
+    (step) => step.type === 'assert_ui_text' && step.label.includes('RED 视频频道'),
+  );
+  const cardTapIndex = plan.findIndex(
+    (step) => step.type === 'tap' && step.label.includes('首张视频卡片'),
+  );
+  const roomTextAssertIndex = plan.findIndex(
+    (step) => step.type === 'assert_ui_text' && step.label.includes('视频详情页文本证据'),
+  );
+  const screenChangeIndex = plan.findIndex(
+    (step) => step.type === 'assert_screen_changes' && step.label.includes('小红书视频画面'),
+  );
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
   const firstSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
 
-  assert.equal(plan.some((step) => step.type === 'force_stop'), false);
-  assert.equal(plan.some((step) => step.type === 'tap_text_region'), false);
-  assert.equal(plan.some((step) => step.type === 'tap_if_ui_text_not_matches'), false);
-  assert.equal(plan.some((step) => step.type === 'assert_ui_text'), false);
-  assert.ok(confirmIndex > -1);
-  assert.ok(firstSwipeIndex > confirmIndex);
-  assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+  assert.ok(plan.some((step) => step.type === 'force_stop' && step.packageName === 'com.xingin.xhs'));
+  assert.equal(confirmIndex, -1);
+  assert.ok(discoverTapIndex > -1);
+  assert.ok(redTapIndex > discoverTapIndex);
+  assert.ok(redFallbackIndex > redTapIndex);
+  assert.equal(plan[redFallbackIndex].x, Math.round(screen.width * 0.214));
+  assert.equal(plan[redFallbackIndex].y, Math.round(screen.height * 0.125));
+  assert.ok(channelAssertIndex > redFallbackIndex);
+  assert.ok(cardTapIndex > channelAssertIndex);
+  assert.ok(roomTextAssertIndex > cardTapIndex);
+  assert.ok(screenChangeIndex > roomTextAssertIndex);
+  assert.equal(plan[screenChangeIndex].optional, undefined);
+  assert.ok(captureIndex > screenChangeIndex);
+  assert.ok(firstSwipeIndex > captureIndex);
 });
 
-test('XHS feed swipes after confirmation are short enough to avoid triggering refresh', () => {
+test('XHS video feed uses a full-screen swipe instead of the long-press menu gesture', () => {
   const plan = buildShortVideoPlan({
     app: { id: 'xiaohongshu', name: 'XHS', packageName: 'com.xingin.xhs' },
-    durationMs: 20_000,
+    durationMs: 30_000,
     screen,
   });
 
-  const confirmIndex = plan.findIndex((step) => step.type === 'manual_confirm');
   const swipes = plan.filter((step) => step.type === 'swipe');
   const feedSwipe = swipes[0];
   const distance = Math.abs(feedSwipe.y1 - feedSwipe.y2);
-  const screenChangeAssert = plan.find((step) => step.type === 'assert_screen_changes');
 
-  assert.ok(feedSwipe, 'expected a feed swipe after manual confirmation');
-  assert.ok(plan.findIndex((step) => step === feedSwipe) > confirmIndex);
+  assert.ok(feedSwipe, 'expected a feed swipe after automatic video entry');
   assert.ok(
-    swipes.every((step) => Math.abs(step.y1 - step.y2) <= Math.round(screen.height * 0.08)),
-    `XHS contains an oversized swipe: ${JSON.stringify(swipes)}`,
+    swipes.every((step) => Math.abs(step.y1 - step.y2) >= Math.round(screen.height * 0.5)),
+    `XHS contains a swipe too short to switch videos: ${JSON.stringify(swipes)}`,
   );
-  assert.ok(distance <= Math.round(screen.height * 0.08), `XHS feed swipe too long: ${distance}`);
-  assert.ok(feedSwipe.y2 >= Math.round(screen.height * 0.52), `XHS feed swipe ends too high: ${feedSwipe.y2}`);
-  assert.equal(screenChangeAssert.optional, true);
+  assert.ok(distance >= Math.round(screen.height * 0.5), `XHS feed swipe too short: ${distance}`);
+  assert.equal(feedSwipe.y1, Math.round(screen.height * 0.78));
+  assert.equal(feedSwipe.y2, Math.round(screen.height * 0.25));
+  assert.equal(feedSwipe.durationMs, 420);
 });
 
-test('XHS requires manual confirmation before continuing feed browsing', () => {
+test('XHS validates the video page before capture and feed swipes', () => {
   const plan = buildShortVideoPlan({
     app: { id: 'xiaohongshu', name: 'XHS', packageName: 'com.xingin.xhs' },
-    durationMs: 20_000,
+    durationMs: 30_000,
     screen,
   });
 
   const confirmIndex = plan.findIndex((step) => step.type === 'manual_confirm');
   const screenChangeIndex = plan.findIndex((step) => step.type === 'assert_screen_changes');
-  const swipes = plan.filter((step) => step.type === 'swipe');
-  const feedSwipeIndex = plan.findIndex((step) => step === swipes[0]);
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  const feedSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
 
-  assert.ok(confirmIndex > -1, 'expected manual confirmation before feed browsing');
-  assert.ok(screenChangeIndex > confirmIndex, 'screen/playback checks should wait for manual confirmation');
-  assert.ok(feedSwipeIndex > confirmIndex, 'feed swipes should wait for manual confirmation');
+  assert.equal(confirmIndex, -1);
+  assert.ok(screenChangeIndex > -1, 'expected required playback validation');
+  assert.ok(captureIndex > screenChangeIndex, 'capture should wait for video playback validation');
+  assert.ok(feedSwipeIndex > captureIndex, 'feed swipes should wait for capture boundary');
 });
 
 test('Douyin short video plan uses a fast entry without UI text scans', () => {
@@ -230,6 +261,131 @@ test('Douyin short video plan uses a fast entry without UI text scans', () => {
   assert.equal(plan.some((step) => step.type === 'tap_text'), false);
   assert.equal(plan.some((step) => step.type === 'swipe_while_ui_text_matches'), false);
   assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+});
+
+test('Kuaishou dismisses the push prompt before validating and browsing the feed', () => {
+  const plan = buildShortVideoPlan({
+    app: { id: 'kuaishou', name: '快手', packageName: 'com.smile.gifmaker' },
+    durationMs: 12_000,
+    screen,
+  });
+
+  const dismissIndex = plan.findIndex(
+    (step) => step.type === 'tap_text' && step.texts.includes('忽略'),
+  );
+  const promptCheckIndex = plan.findIndex(
+    (step) =>
+      step.type === 'assert_ui_text' &&
+      step.none.includes('打开推送通知') &&
+      step.none.includes('去开启'),
+  );
+  const playbackCheckIndex = plan.findIndex(
+    (step) =>
+      step.type === 'assert_screen_changes' &&
+      step.label.includes('快手短视频'),
+  );
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  const firstSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
+
+  assert.ok(dismissIndex > -1);
+  assert.ok(promptCheckIndex > dismissIndex);
+  assert.ok(playbackCheckIndex > promptCheckIndex);
+  assert.ok(captureIndex > playbackCheckIndex);
+  assert.ok(firstSwipeIndex > captureIndex);
+});
+
+test('Xigua launches directly into the selected video feed before swiping', () => {
+  const plan = buildShortVideoPlan({
+    app: { id: 'xigua', name: '西瓜视频', packageName: 'com.ss.android.article.video' },
+    durationMs: 20_000,
+    screen,
+  });
+
+  const feedAssertIndex = plan.findIndex(
+    (step) => step.type === 'assert_ui_text' && step.label.includes('精选视频流'),
+  );
+  const playbackAssertIndex = plan.findIndex(
+    (step) => step.type === 'assert_screen_changes' && step.label.includes('西瓜视频画面'),
+  );
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  const firstSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
+  const feedAssert = plan[feedAssertIndex];
+  const firstSwipe = plan[firstSwipeIndex];
+
+  assert.ok(
+    plan.some(
+      (step) =>
+        step.type === 'force_stop' &&
+        step.packageName === 'com.ss.android.article.video',
+    ),
+  );
+  assert.ok(plan.some((step) => step.type === 'launch_app' && step.label === '打开西瓜视频'));
+  assert.equal(plan.some((step) => step.type === 'manual_confirm'), false);
+  assert.ok(feedAssertIndex > -1);
+  assert.ok(feedAssert.all.some((matcher) => matcher instanceof RegExp && matcher.test('精选')));
+  assert.ok(feedAssert.all.some((matcher) => matcher instanceof RegExp && matcher.test('分享')));
+  assert.ok(playbackAssertIndex > feedAssertIndex);
+  assert.ok(captureIndex > playbackAssertIndex);
+  assert.ok(firstSwipeIndex > captureIndex);
+  assert.equal(firstSwipe.y1, Math.round(screen.height * 0.79));
+  assert.equal(firstSwipe.y2, Math.round(screen.height * 0.2));
+});
+
+test('Toutiao enters the bottom video tab and validates the full-screen feed before swiping', () => {
+  const plan = buildShortVideoPlan({
+    app: { id: 'toutiao', name: '头条', packageName: 'com.ss.android.article.news' },
+    durationMs: 25_000,
+    screen,
+  });
+
+  const videoTabTextIndex = plan.findIndex(
+    (step) =>
+      step.type === 'tap_text_region' &&
+      step.texts.includes('视频') &&
+      step.label.includes('头条底部视频入口'),
+  );
+  const videoTabFallbackIndex = plan.findIndex(
+    (step) => step.type === 'tap' && step.label.includes('兜底点击头条底部视频入口'),
+  );
+  const feedAssertIndex = plan.findIndex(
+    (step) => step.type === 'assert_ui_text' && step.label.includes('头条全屏视频流'),
+  );
+  const playbackAssertIndex = plan.findIndex(
+    (step) => step.type === 'assert_screen_changes' && step.label.includes('头条视频画面'),
+  );
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  const firstSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
+  const feedAssert = plan[feedAssertIndex];
+  const videoTabFallback = plan[videoTabFallbackIndex];
+  const firstSwipe = plan[firstSwipeIndex];
+
+  assert.ok(
+    plan.some(
+      (step) =>
+        step.type === 'force_stop' &&
+        step.packageName === 'com.ss.android.article.news',
+    ),
+  );
+  assert.ok(plan.some((step) => step.type === 'launch_app' && step.label === '打开头条'));
+  assert.equal(plan.some((step) => step.type === 'manual_confirm'), false);
+  assert.ok(videoTabTextIndex > -1);
+  assert.equal(plan[videoTabTextIndex].optional, true);
+  assert.ok(videoTabFallbackIndex > videoTabTextIndex);
+  assert.equal(videoTabFallback.x, Math.round(screen.width * 0.3));
+  assert.equal(videoTabFallback.y, Math.round(screen.height * 0.935));
+  assert.ok(feedAssertIndex > videoTabFallbackIndex);
+  for (const evidence of ['精选', '关注', '分享', '视频']) {
+    assert.ok(
+      feedAssert.all.some(
+        (matcher) => matcher instanceof RegExp && matcher.test(evidence),
+      ),
+    );
+  }
+  assert.ok(playbackAssertIndex > feedAssertIndex);
+  assert.ok(captureIndex > playbackAssertIndex);
+  assert.ok(firstSwipeIndex > captureIndex);
+  assert.equal(firstSwipe.y1, Math.round(screen.height * 0.79));
+  assert.equal(firstSwipe.y2, Math.round(screen.height * 0.2));
 });
 
 test('live entry plan rejects unsupported live apps', () => {
@@ -264,28 +420,25 @@ test('Taobao live plan must enter a live room rather than only the live home pag
   assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
 });
 
-test('Douyin live plan validates Live activity and screen motion', () => {
+test('Douyin live plan waits for manual room entry before validation and takeover', () => {
   const plan = buildLiveEntryPlan({
     app: { id: 'douyin', name: '抖音', packageName: 'com.ss.android.ugc.aweme' },
     durationMs: 30_000,
     screen,
   });
 
-  assert.ok(plan.some((step) => step.type === 'swipe_if_ui_text_not_matches' && step.label.includes('顶部频道栏')));
-  assert.ok(plan.some((step) => step.type === 'tap_text_region' && step.texts.includes('直播')));
-  assert.ok(plan.some((step) => step.type === 'assert_ui_text_or_activity' && step.label.includes('直播频道')));
-  assert.ok(plan.some((step) => step.type === 'tap_if_activity_not_matches' && step.label.includes('直播预览')));
+  assert.equal(plan[0].type, 'manual_confirm');
+  assert.equal(plan[0].confirmLabel, '我已进入直播，继续');
+  assert.equal(plan.some((step) => step.type === 'launch_app'), false);
   assert.ok(
     plan.some(
       (step) =>
-        step.type === 'assert_foreground_package' &&
+        step.type === 'assert_ui_text_or_activity' &&
         step.activityAny?.some((matcher) => matcher instanceof RegExp && matcher.test('LivePlayActivity')),
     ),
   );
-  assert.ok(
-    plan.some((step) => step.type === 'assert_ui_text' && step.label.includes('直播间文本证据') && step.optional),
-  );
   assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+  assert.ok(plan.some((step) => step.type === 'start_capture'));
 });
 
 test('JD live plan uses bottom browse tab before switching from video to live', () => {
@@ -368,7 +521,7 @@ test('WeChat live plan taps a live card and validates live room activity', () =>
   assert.ok(screenChangeIndex > cardTapIndex, 'WeChat live screen validation should run after card tap');
 });
 
-test('XHS live plan hands off to the user and validates live room activity', () => {
+test('XHS live plan enters the first live room automatically and validates room evidence', () => {
   const plan = buildLiveEntryPlan({
     app: { id: 'xiaohongshu', name: '小红书', packageName: 'com.xingin.xhs' },
     durationMs: 30_000,
@@ -376,25 +529,80 @@ test('XHS live plan hands off to the user and validates live room activity', () 
   });
 
   const confirmIndex = plan.findIndex((step) => step.type === 'manual_confirm');
-  const activityAssertIndex = plan.findIndex(
+  const discoverTapIndex = plan.findIndex(
+    (step) =>
+      step.type === 'tap_text_region' &&
+      step.texts.includes('发现') &&
+      step.label.includes('小红书'),
+  );
+  const liveTapIndex = plan.findIndex(
+    (step) =>
+      step.type === 'tap_text_region' &&
+      step.texts.includes('直播') &&
+      step.label.includes('小红书'),
+  );
+  const discoverFallbackIndex = plan.findIndex(
+    (step) => step.type === 'tap' && step.label.includes('兜底点击小红书首页发现频道'),
+  );
+  const liveFallbackIndex = plan.findIndex(
+    (step) => step.type === 'tap' && step.label.includes('兜底点击小红书顶部直播频道'),
+  );
+  const channelAssertIndex = plan.findIndex(
+    (step) =>
+      step.type === 'assert_ui_text' &&
+      step.label.includes('小红书直播频道'),
+  );
+  const cardTapIndex = plan.findIndex(
+    (step) => step.type === 'tap' && step.label.includes('小红书首张直播卡片'),
+  );
+  const packageAssertIndex = plan.findIndex(
     (step) =>
       step.type === 'assert_foreground_package' &&
-      step.activityAny?.some((matcher) => matcher instanceof RegExp && matcher.test('AlphaAudienceActivityV2')),
+      step.packageName === 'com.xingin.xhs',
+  );
+  const roomTextAssertIndex = plan.findIndex(
+    (step) =>
+      step.type === 'assert_ui_text' &&
+      step.label.includes('小红书直播间文本证据'),
   );
   const screenChangeIndex = plan.findIndex(
     (step) => step.type === 'assert_screen_changes' && step.label.includes('小红书直播画面'),
   );
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  const packageAssert = plan[packageAssertIndex];
+  const roomTextAssert = plan[roomTextAssertIndex];
 
+  assert.ok(plan.some((step) => step.type === 'force_stop' && step.packageName === 'com.xingin.xhs'));
   assert.ok(plan.some((step) => step.type === 'launch_app' && step.packageName === 'com.xingin.xhs'));
-  assert.equal(plan.some((step) => step.type === 'force_stop'), false);
-  assert.equal(plan.some((step) => step.type === 'tap_text_region'), false);
-  assert.equal(plan.some((step) => step.type === 'tap_if_activity_not_matches' && step.label.includes('小红书直播卡片')), false);
-  assert.ok(confirmIndex > -1, 'expected manual confirmation before XHS live room validation');
-  assert.ok(activityAssertIndex > confirmIndex, 'XHS live Activity validation should wait for manual confirmation');
-  assert.ok(screenChangeIndex > confirmIndex, 'XHS live screen validation should wait for manual confirmation');
+  assert.equal(confirmIndex, -1);
+  assert.ok(discoverTapIndex > -1, 'expected automatic XHS discovery channel tap');
+  assert.ok(discoverFallbackIndex > discoverTapIndex, 'expected coordinate fallback for XHS discovery');
+  assert.ok(liveTapIndex > discoverTapIndex, 'XHS live channel should be selected after discovery');
+  assert.ok(liveFallbackIndex > liveTapIndex, 'expected coordinate fallback for XHS live channel');
+  assert.equal(plan[discoverFallbackIndex].x, Math.round(screen.width * 0.5));
+  assert.equal(plan[discoverFallbackIndex].y, Math.round(screen.height * 0.075));
+  assert.equal(plan[liveFallbackIndex].x, Math.round(screen.width * 0.355));
+  assert.equal(plan[liveFallbackIndex].y, Math.round(screen.height * 0.125));
+  assert.ok(channelAssertIndex > liveFallbackIndex, 'XHS live channel should be verified before card selection');
+  assert.ok(cardTapIndex > channelAssertIndex, 'XHS live card should be tapped only after channel validation');
+  assert.ok(packageAssertIndex > cardTapIndex, 'XHS foreground validation should run after card tap');
+  assert.equal(packageAssert.activityAny, undefined, 'Harmony XHS must not depend on Android Activity names');
+  assert.ok(roomTextAssertIndex > packageAssertIndex, 'XHS room text validation should follow package validation');
+  assert.ok(
+    roomTextAssert.all.some(
+      (matcher) => matcher instanceof RegExp && matcher.test('欢迎来到直播间'),
+    ),
+  );
+  assert.ok(
+    roomTextAssert.all.some(
+      (matcher) => matcher instanceof RegExp && matcher.test('说点什么'),
+    ),
+  );
+  assert.ok(screenChangeIndex > roomTextAssertIndex, 'XHS live screen validation should follow room text validation');
+  assert.ok(captureIndex > screenChangeIndex, 'capture should start only after XHS room validation');
 });
 
-test('live plans switch rooms after random multi-minute waits', () => {
+test('live plans use random defaults and exact configured switch intervals', () => {
   const entryPlan = buildLiveEntryPlan({
     app: { id: 'taobao', name: '淘宝', packageName: 'com.taobao.taobao' },
     durationMs: 20 * 60_000,
@@ -416,9 +624,12 @@ test('live plans switch rooms after random multi-minute waits', () => {
   const streamWait = streamPlan.find((step) => step.type === 'wait' && step.label.includes('后切换'));
 
   assert.ok(streamWait, 'watch_live should wait before switching');
-  assert.ok(streamWait.ms >= Math.round(3 * 60_000 * 0.7), `explicit interval wait too short: ${streamWait.ms}`);
-  assert.ok(streamWait.ms <= Math.round(3 * 60_000 * 1.3), `explicit interval wait too long: ${streamWait.ms}`);
-  assert.ok(streamPlan.some((step) => step.type === 'swipe' && step.label.includes('随机间隔后下滑')));
+  assert.equal(streamWait.ms, 3 * 60_000);
+  assert.ok(
+    streamPlan.some(
+      (step) => step.type === 'swipe' && step.label.includes('按设置间隔后下滑'),
+    ),
+  );
 });
 
 test('AI chat plan uses English messages and prompt guard', () => {
@@ -479,8 +690,18 @@ test('AI chat plans use short adaptive reply waits by default', () => {
     platform: 'harmony',
     screen,
   });
+  const deepseekPlan = buildDeepseekChatPlan({
+    app: {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      packageName: 'com.deepseek.chat',
+    },
+    durationMs: 15_000,
+    platform: 'harmony',
+    screen,
+  });
 
-  for (const plan of [qianwenPlan, doubaoPlan]) {
+  for (const plan of [qianwenPlan, doubaoPlan, deepseekPlan]) {
     const waits = plan.filter((step) => step.type === 'wait_for_screen_idle');
     assert.ok(waits.length > 0, 'expected adaptive reply waits');
     assert.ok(waits.every((step) => step.maxMs <= 8_000), `adaptive wait too long: ${JSON.stringify(waits)}`);
@@ -510,10 +731,21 @@ test('AI chat plans include large default message pools', () => {
     platform: 'harmony',
     screen,
   });
+  const deepseekPlan = buildDeepseekChatPlan({
+    app: {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      packageName: 'com.deepseek.chat',
+    },
+    durationMs: 340_000,
+    platform: 'harmony',
+    screen,
+  });
 
   for (const [plan, inputType] of [
     [qianwenPlan, 'input_text'],
     [doubaoPlan, 'input_key_text'],
+    [deepseekPlan, 'input_key_text'],
   ]) {
     const messages = plan.filter((step) => step.type === inputType).map((step) => step.text);
     const uniqueMessages = new Set(messages);
@@ -545,6 +777,173 @@ test('Doubao Harmony chat uses HDC key injection and coordinate sending', () => 
   assert.equal(sendStep.x, Math.round(screen.width * 0.877));
   assert.equal(sendStep.y, Math.round(screen.height * 0.549));
   assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+});
+
+test('DeepSeek Harmony chat uses HDC key injection and calibrated coordinates', () => {
+  const plan = buildDeepseekChatPlan({
+    app: {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      packageName: 'com.deepseek.chat',
+      skillConfig: {
+        coordinates: {
+          input: { xRatio: 0.48, yRatio: 0.93 },
+          send: { xRatio: 0.9, yRatio: 0.55 },
+        },
+      },
+    },
+    durationMs: 12_000,
+    intervalMs: 8_000,
+    platform: 'harmony',
+    screen,
+  });
+
+  const inputIndex = plan.findIndex((step) => step.type === 'input_key_text');
+  const focusStep = plan[inputIndex - 2];
+  const inputStep = plan[inputIndex];
+  const sendStep = plan[inputIndex + 2];
+
+  assert.equal(focusStep.type, 'tap');
+  assert.equal(focusStep.x, Math.round(screen.width * 0.48));
+  assert.equal(focusStep.y, Math.round(screen.height * 0.93));
+  assert.equal(inputStep.text, 'FACT');
+  assert.equal(inputStep.clearExisting, true);
+  assert.equal(sendStep.type, 'tap');
+  assert.equal(sendStep.x, Math.round(screen.width * 0.9));
+  assert.equal(sendStep.y, Math.round(screen.height * 0.55));
+  assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+});
+
+test('DeepSeek default coordinates match the verified Harmony layout', () => {
+  const plan = buildDeepseekChatPlan({
+    app: {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      packageName: 'com.deepseek.chat',
+    },
+    durationMs: 12_000,
+    intervalMs: 8_000,
+    platform: 'harmony',
+    screen,
+  });
+
+  const focusStep = plan.find((step) => step.label === '聚焦 DeepSeek 输入框');
+  const sendStep = plan.find((step) => step.label === '点击 DeepSeek 发送按钮');
+
+  assert.equal(focusStep.x, Math.round(screen.width * 0.5));
+  assert.equal(focusStep.y, Math.round(screen.height * 0.85));
+  assert.equal(sendStep.x, Math.round(screen.width * 0.875));
+  assert.equal(sendStep.y, Math.round(screen.height * 0.565));
+});
+
+test('Qianwen Harmony chat uses HDC key injection and verified coordinates', () => {
+  const plan = buildQianwenChatPlan({
+    app: {
+      id: 'qianwen',
+      name: '千问',
+      packageName: 'com.aliyun.tongyi',
+      skillConfig: {
+        coordinates: {
+          input: { xRatio: 0.461, yRatio: 0.924 },
+          send: { xRatio: 0.894, yRatio: 0.564 },
+        },
+      },
+    },
+    durationMs: 12_000,
+    intervalMs: 8_000,
+    platform: 'harmony',
+    screen,
+  });
+
+  const inputIndex = plan.findIndex((step) => step.type === 'input_key_text');
+  const focusStep = plan[inputIndex - 2];
+  const inputStep = plan[inputIndex];
+  const sendStep = plan[inputIndex + 2];
+
+  assert.equal(focusStep.type, 'tap');
+  assert.equal(focusStep.x, Math.round(screen.width * 0.461));
+  assert.equal(focusStep.y, Math.round(screen.height * 0.924));
+  assert.equal(inputStep.text, 'FACT');
+  assert.equal(inputStep.clearExisting, true);
+  assert.equal(sendStep.type, 'tap');
+  assert.equal(sendStep.x, Math.round(screen.width * 0.894));
+  assert.equal(sendStep.y, Math.round(screen.height * 0.564));
+  assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+});
+
+test('Xiaoyi chat waits for manual entry and uses stable resource ids', () => {
+  const resources = {
+    launcherIcon: 'AppIconCommonView_com.huawei.hmos.vassistant.launcher.VoiceAbility',
+    input: 'id_text_input',
+    send: 'send_hot_area',
+  };
+  const plan = buildXiaoyiChatPlan({
+    app: {
+      id: 'xiaoyi',
+      name: '小艺',
+      packageName: 'com.huawei.vassistant',
+      skillConfig: { resources },
+    },
+    durationMs: 7000,
+    intervalMs: 4000,
+    platform: 'harmony',
+    screen,
+  });
+
+  assert.equal(plan[0].type, 'manual_confirm');
+  assert.match(plan[0].message, /手动进入小艺文字聊天页面/);
+  assert.equal(plan[0].confirmLabel, '我已进入，继续');
+  assert.equal(
+    plan.some((step) => step.type === 'keyevent' && step.code === 'KEYCODE_HOME'),
+    false,
+  );
+  assert.equal(plan.some((step) => step.type === 'open_home_app'), false);
+  const foregroundIndex = plan.findIndex(
+    (step) =>
+      step.type === 'assert_foreground_package' &&
+      step.packageName === 'com.huawei.vassistant',
+  );
+  const validationIndex = plan.findIndex(
+    (step) => step.type === 'assert_ui_node' && step.ids.includes(resources.input),
+  );
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+  assert.ok(foregroundIndex > 0);
+  assert.ok(validationIndex > foregroundIndex);
+  assert.ok(captureIndex > validationIndex);
+  const sendMessage = plan.find(
+    (step) => step.type === 'send_ui_message' && step.text === 'FACT',
+  );
+  assert.equal(sendMessage.inputResourceId, resources.input);
+  assert.equal(sendMessage.sendResourceId, resources.send);
+  assert.equal(sendMessage.attempts, 3);
+  assert.equal(sendMessage.focusWaitMs, 700);
+  assert.equal(sendMessage.confirmOnEditorClear, true);
+  assert.ok(plan.some((step) => step.type === 'assert_screen_changes'));
+});
+
+test('Qianwen chat keeps adaptive waits, a large message pool and capture boundary', () => {
+  const plan = buildQianwenChatPlan({
+    app: {
+      id: 'qianwen',
+      name: '千问',
+      packageName: 'com.aliyun.tongyi',
+    },
+    durationMs: 340_000,
+    platform: 'harmony',
+    screen,
+  });
+
+  const messages = plan.filter((step) => step.type === 'input_key_text').map((step) => step.text);
+  const waits = plan.filter((step) => step.type === 'wait_for_screen_idle');
+  const validationIndex = plan.findIndex((step) => step.type === 'assert_foreground_package');
+  const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
+
+  assert.ok(new Set(messages).size >= 35);
+  assert.ok(messages.every((message) => /^[\x20-\x7E]+$/.test(message)));
+  assert.ok(waits.length > 0);
+  assert.ok(waits.every((step) => step.maxMs <= 8_000));
+  assert.ok(waits.every((step) => step.minMs <= 3_000));
+  assert.ok(captureIndex > validationIndex);
 });
 
 test('capture starts only after each skill reaches its validated content state', () => {
@@ -638,6 +1037,26 @@ test('capture starts only after each skill reaches its validated content state',
       plan: buildDoubaoChatPlan({
         app: doubaoApp,
         durationMs: 12_000,
+      }),
+      validation: 'assert_foreground_package',
+    },
+    {
+      name: 'DeepSeek chat',
+      plan: buildDeepseekChatPlan({
+        app: { name: 'DeepSeek', packageName: 'com.deepseek.chat' },
+        durationMs: 12_000,
+        platform: 'harmony',
+        screen,
+      }),
+      validation: 'assert_foreground_package',
+    },
+    {
+      name: 'Qianwen chat',
+      plan: buildQianwenChatPlan({
+        app: { name: 'Qianwen', packageName: 'com.aliyun.tongyi' },
+        durationMs: 12_000,
+        platform: 'harmony',
+        screen,
       }),
       validation: 'assert_foreground_package',
     },

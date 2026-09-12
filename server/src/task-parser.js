@@ -1,10 +1,29 @@
 import { findAppByName } from './app-registry.js';
 
-const SUPPORTED_LIVE_ENTRY_APP_IDS = new Set(['douyin', 'taobao', 'jd', 'wechat', 'xiaohongshu']);
+const SUPPORTED_LIVE_ENTRY_APP_IDS = new Set([
+  'douyin',
+  'taobao',
+  'jd',
+  'wechat',
+  'xiaohongshu',
+  'kuaishou',
+  'bilibili',
+  'huya',
+  'douyu',
+  'weibo',
+  'iqiyi',
+  'yangshipin',
+  'migu-video',
+  'tencent-sports',
+]);
 const DEFAULT_AI_CHAT_INTERVAL_MS = 8 * 1000;
 const DEFAULT_WECHAT_MESSAGE_INTERVAL_MS = 8 * 1000;
 const DEFAULT_WECHAT_MEDIA_INTERVAL_MS = 8 * 1000;
 const DEFAULT_WECHAT_MEDIA_DURATION_MS = 5 * 60 * 1000;
+const DEFAULT_WECHAT_CALL_DURATION_MS = 30 * 1000;
+const DEFAULT_XUNLEI_MAGNET =
+  'magnet:?xt=urn:btih:8C9F4DB08497563EF6EB01CF81199F645DA0954B';
+const DEFAULT_APP_STORE_TARGET = '王者荣耀';
 
 const CHINESE_DIGITS = {
   零: 0,
@@ -35,6 +54,106 @@ export function parseTaskFallback(taskText, apps = []) {
 
   const app = findAppByName(apps, text);
   const appName = app?.name || null;
+
+  if (/(应用市场|应用商店)/.test(text) && /(下载|安装)/.test(text)) {
+    const target = findTargetApp(text, apps);
+    return {
+      intent: 'app_store_download',
+      appName: apps.find((candidate) => candidate.id === 'app-store')?.name || '应用市场',
+      targetApp: target?.name || DEFAULT_APP_STORE_TARGET,
+      durationMs: parseDurationMs(text) ?? 30000,
+    };
+  }
+
+  if (app?.id === 'xunlei' && /(下载|磁力|magnet)/i.test(text)) {
+    return {
+      intent: 'xunlei_download',
+      appName,
+      magnetUrl: text.match(/magnet:\?\S+/i)?.[0] || DEFAULT_XUNLEI_MAGNET,
+      durationMs: parseDurationMs(text) ?? 30000,
+    };
+  }
+
+  if (app?.id === 'xunlei' && /(上传|相册|云盘)/.test(text)) {
+    return { intent: 'xunlei_upload_media', appName };
+  }
+
+  if (app?.id === 'baidu-netdisk' && /(下载|网盘)/.test(text)) {
+    return {
+      intent: 'baidu_netdisk_download',
+      appName,
+      durationMs: parseDurationMs(text) ?? 30000,
+    };
+  }
+  if (app?.id === 'baidu-netdisk' && /上传/.test(text)) {
+    return { intent: 'baidu_netdisk_upload', appName, mediaType: /文档/.test(text) ? 'document' : /视频/.test(text) ? 'video' : 'image' };
+  }
+
+  if (['dingtalk', 'wecom'].includes(app?.id) && /语音通话|音频通话|视频通话/.test(text) && !/音视频通话/.test(text)) {
+    const video = /视频通话/.test(text);
+    return { intent: app.id === 'wecom' ? 'wecom_voip_call' : 'dingtalk_voip_call', appName, targetMode: 'first', callType: video ? 'video' : 'audio',
+      durationMs: parseDurationMs(text) ?? 30000,
+      camera: video && /开启摄像头|开摄像头|摄像头开启/.test(text) && !/不开摄像头/.test(text),
+      shareScreen: video && /共享屏幕/.test(text) && !/不共享屏幕|共享屏幕关闭/.test(text) };
+  }
+
+  if (app?.id === 'welink' && /语音通话|音频通话|视频通话/.test(text) && !/音视频通话/.test(text)) {
+    const video = /视频通话/.test(text);
+    return {
+      intent: 'welink_voip_call',
+      appName,
+      targetMode: 'first',
+      callType: video ? 'video' : 'audio',
+      durationMs: parseDurationMs(text) ?? DEFAULT_WECHAT_CALL_DURATION_MS,
+      camera: /开启视频|开视频|开启摄像头|开摄像头/.test(text),
+      shareScreen: /共享屏幕/.test(text),
+    };
+  }
+
+  if (app?.id === 'feishu' && /加入会议/.test(text)) {
+    const meetingId = text.match(/(?:会议号|加入会议)\s*((?:\d[ -]?){8}\d)(?!\d)/)?.[1]?.replace(/[\s-]/g, '') || '';
+    if (!meetingId) return { intent: 'missing_parameter', appName, field: 'meetingId', message: '请输入9位飞书会议号' };
+    return { intent: 'feishu_join_meeting', appName, meetingId, durationMs: parseDurationMs(text) ?? 30000,
+      camera: /开启摄像头|开摄像头|摄像头开启/.test(text) && !/不开摄像头/.test(text),
+      shareScreen: /共享屏幕/.test(text) && !/不共享屏幕|共享屏幕关闭/.test(text) };
+  }
+
+  if (app?.id === 'feishu' && /快速会议|发起.*会议/.test(text) && !/加入会议/.test(text)) {
+    return { intent: 'feishu_quick_meeting', appName, durationMs: parseDurationMs(text) ?? 30000,
+      camera: /开启摄像头|开摄像头|摄像头开启/.test(text) && !/不开摄像头/.test(text),
+      shareScreen: /共享屏幕/.test(text) && !/不共享屏幕|共享屏幕关闭/.test(text) };
+  }
+
+  if (app?.id === 'dingtalk' && /加入会议/.test(text)) {
+    const meetingId = text.match(/(?:会议号|加入会议)\s*((?:\d[ -]?){9}\d)(?!\d)/)?.[1]?.replace(/[\s-]/g, '') || '';
+    if (!meetingId) return { intent: 'missing_parameter', appName, field: 'meetingId', message: '请输入钉钉会议号' };
+    return { intent: 'dingtalk_join_meeting', appName, meetingId, meetingType: 'video',
+      durationMs: parseDurationMs(text) ?? 30000,
+      camera: /开启摄像头|开摄像头|摄像头开启/.test(text) && !/不开摄像头/.test(text),
+      shareScreen: /共享屏幕/.test(text) && !/不共享屏幕|共享屏幕关闭/.test(text) };
+  }
+
+  if (app?.id === 'dingtalk' && /快速会议|发起.*会议/.test(text) && !/加入会议/.test(text)) {
+    const meetingType = /语音会议|类型audio/.test(text) ? 'audio' : 'video';
+    return { intent: 'dingtalk_quick_meeting', appName, meetingType,
+      durationMs: parseDurationMs(text) ?? 30000,
+      camera: meetingType === 'video' && /开启摄像头|开摄像头|摄像头开启/.test(text) && !/不开摄像头/.test(text),
+      shareScreen: /共享屏幕/.test(text) && !/不共享屏幕|共享屏幕关闭/.test(text) };
+  }
+
+  if (
+    ['wechat', 'qq'].includes(app?.id) &&
+    !/音视频通话/.test(text) &&
+    /(音频通话|语音通话|视频通话)/.test(text)
+  ) {
+    return {
+      intent: app.id === 'qq' ? 'qq_voip_call' : 'wechat_voip_call',
+      appName,
+      targetMode: 'first',
+      callType: /视频通话/.test(text) ? 'video' : 'audio',
+      durationMs: parseDurationMs(text) ?? DEFAULT_WECHAT_CALL_DURATION_MS,
+    };
+  }
 
   if (
     app?.id === 'wechat' &&
@@ -114,6 +233,10 @@ export function parseTaskFallback(taskText, apps = []) {
       durationMs: parseDurationMs(text) ?? 10 * 60 * 1000,
       switchIntervalMs: parseSwitchIntervalMs(text),
     };
+  }
+
+  if (app?.id === 'bilibili' && !/直播/.test(text) && /刷|短视频|竖屏|人工|手动/.test(text)) {
+    return { intent: 'watch_feed', appName, durationMs: parseDurationMs(text) ?? 300000 };
   }
 
   if (app?.id === 'tencent-video' && /(看|观看|播放)/.test(text)) {
@@ -202,7 +325,19 @@ function isInstalledGenericMediaApp(app) {
 }
 
 function isAiChatApp(app) {
-  return ['qianwen'].includes(app?.id);
+  return ['ai_chat', 'deepseek_chat', 'qianwen_chat', 'xiaoyi_chat'].includes(app?.skill);
+}
+
+function findTargetApp(text, apps) {
+  return apps
+    .filter((candidate) => candidate.id !== 'app-store')
+    .flatMap((candidate) =>
+      [candidate.name, ...(candidate.aliases || [])]
+        .filter(Boolean)
+        .map((alias) => ({ app: candidate, alias: String(alias) })),
+    )
+    .filter(({ alias }) => String(text).includes(alias))
+    .sort((left, right) => right.alias.length - left.alias.length)[0]?.app || null;
 }
 
 function detectUnsupportedBusinessFlow(text, app) {

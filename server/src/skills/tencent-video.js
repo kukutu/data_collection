@@ -22,6 +22,7 @@ export function buildTencentVideoPlaybackPlan({
       type: 'manual_confirm',
       label: '等待人工接管腾讯视频',
       message: '请在手机上手动打开要观看的腾讯视频，并切到横屏全屏播放，然后在前端点击“我已点入视频，继续”。',
+      confirmLabel: '我已点入视频，继续',
     },
     { type: 'wait', ms: 1500, label: '等待全屏播放稳定' },
     {
