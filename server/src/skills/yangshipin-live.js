@@ -21,12 +21,52 @@ function entries(snapshot) {
     const a = node.attributes || node;
     const match = String(a.bounds).match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
     const bounds = match ? { x: +match[1], y: +match[2], w: +match[3] - +match[1], h: +match[4] - +match[2] } : null;
-    const item = { text: String(a.text || a.description || '').replace(/\s/g, ''), bounds, parents, type: a.type, clickable: String(a.clickable) === 'true' };
+    const item = {
+      text: String(a.text || a.description || a.originalText || a.hint || '').replace(/\s/g, ''),
+      bounds,
+      parents,
+      type: a.type,
+      clickable: String(a.clickable) === 'true',
+    };
     out.push(item);
     (node.children || []).forEach(child => visit(child, [...parents, item]));
   }
   visit(snapshot?.layout);
   return out;
+}
+
+export function yangshipinLiveTabPoint(snapshot, screen) {
+  const height = Number(screen?.height) || 2832;
+  const item = entries(snapshot).find(n =>
+    n.text === '直播' && n.bounds &&
+    n.bounds.y >= height * 0.05 && n.bounds.y <= height * 0.2,
+  );
+  return item
+    ? { x: Math.round(item.bounds.x + item.bounds.w / 2), y: Math.round(item.bounds.y + item.bounds.h / 2) }
+    : null;
+}
+
+export function yangshipinLiveEntryCardPoint(snapshot, screen) {
+  const width = Number(screen?.width) || 1280;
+  const height = Number(screen?.height) || 2832;
+  const candidates = entries(snapshot)
+    .filter(n => n.clickable && n.bounds &&
+      n.bounds.w >= width * 0.55 && n.bounds.h >= height * 0.15 &&
+      n.bounds.h <= height * 0.4 && n.bounds.y >= height * 0.12 &&
+      n.bounds.y <= height * 0.65)
+    .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
+  const card = candidates.find((candidate, index) =>
+    candidates.slice(0, index).every(previous =>
+      Math.abs(previous.bounds.x - candidate.bounds.x) >= 20 ||
+      Math.abs(previous.bounds.y - candidate.bounds.y) >= 20,
+    ),
+  );
+  return card
+    ? {
+        x: Math.round(card.bounds.x + card.bounds.w / 2),
+        y: Math.round(card.bounds.y + card.bounds.h / 2),
+      }
+    : null;
 }
 
 export function isYangshipinLiveRoom(snapshot) {
@@ -100,8 +140,30 @@ export async function executeYangshipinLiveBrowse({ device, app, durationMs = 30
   await device.forceStopPackage(app.packageName);
   await device.launchPackage(app.packageName);
   await sleep(5000);
-  await poll(s => entries(s).some(n => n.text === '热门赛事') && entries(s).some(n => n.text === '首页'), '央视频首页未加载完成');
-  await device.tap({ x: Math.round(screen.width * 0.5), y: Math.round(screen.height * 0.60) });
+  const homeSnapshot = await poll(s => entries(s).some(n => /热门赛事|热门看点/.test(n.text)) && entries(s).some(n => n.text === '首页'), '央视频首页未加载完成');
+  const television = entries(homeSnapshot).find(n =>
+    n.text === '电视' && n.bounds && n.bounds.y > screen.height * 0.9,
+  );
+  if (!television) throw new Error('央视频未找到底部电视入口');
+  if (television) {
+    await foreground();
+    await device.tap({
+      x: Math.round(television.bounds.x + television.bounds.w / 2),
+      y: Math.round(television.bounds.y + television.bounds.h / 2),
+    });
+    await sleep(800);
+  }
+  const liveTab = await poll(s => Boolean(yangshipinLiveTabPoint(s, screen)), '央视频未找到顶部直播频道');
+  await device.tap(yangshipinLiveTabPoint(liveTab, screen));
+  const livePage = await poll(
+    s => isYangshipinLiveRoom(s) || Boolean(yangshipinLiveEntryCardPoint(s, screen)),
+    '央视频直播频道未加载完成',
+  );
+  if (!isYangshipinLiveRoom(livePage)) {
+    const liveCard = yangshipinLiveEntryCardPoint(livePage, screen);
+    if (!liveCard) throw new Error('央视频未找到中部直播卡片');
+    await device.tap(liveCard);
+  }
   let room = await poll(isYangshipinLiveRoom, '未进入央视频真实直播间');
   report('确认央视频直播画面与直播控件');
   await motion();

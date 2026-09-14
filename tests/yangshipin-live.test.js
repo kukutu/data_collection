@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isYangshipinLiveRoom, yangshipinLiveCards } from '../server/src/skills/yangshipin-live.js';
+import {
+  isYangshipinLiveRoom,
+  yangshipinLiveCards,
+  yangshipinLiveEntryCardPoint,
+  yangshipinLiveTabPoint,
+} from '../server/src/skills/yangshipin-live.js';
 import { parseTaskFallback } from '../server/src/task-parser.js';
 import { loadApps } from '../server/src/app-registry.js';
 import { getWorkflowCatalog } from '../server/src/workflow-registry.js';
@@ -26,6 +31,21 @@ test('Yangshipin targets side-panel preview images rather than their non-clickab
   const cards = yangshipinLiveCards(s, { width: 1280, height: 2832 });
   assert.equal(cards.length, 1);
   assert.ok(cards[0].y < 596 && cards[0].y > 260);
+});
+test('Yangshipin derives the current top live tab and center live card from layout bounds', () => {
+  const s = {
+    layout: {
+      children: [
+        node('直播', '[418,329][524,391]'),
+        {
+          attributes: { clickable: 'true', bounds: '[56,458][1200,1102]' },
+          children: [],
+        },
+      ],
+    },
+  };
+  assert.deepEqual(yangshipinLiveTabPoint(s, { width: 1256, height: 2760 }), { x: 471, y: 360 });
+  assert.deepEqual(yangshipinLiveEntryCardPoint(s, { width: 1256, height: 2760 }), { x: 628, y: 780 });
 });
 test('Yangshipin live text parses to the dedicated live intent', () => {
   const parsed = parseTaskFallback('看30秒央视频直播，每5秒切换一次直播', loadApps());

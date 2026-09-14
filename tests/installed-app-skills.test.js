@@ -162,50 +162,29 @@ test('WeChat message plan selects the first conversation and loops a large messa
   });
 });
 
-test('XHS short video plan enters the RED feed and first video automatically', () => {
+test('XHS short video plan waits for manual video entry before capture', () => {
   const plan = buildShortVideoPlan({
     app: { id: 'xiaohongshu', name: '小红书', packageName: 'com.xingin.xhs' },
     durationMs: 30_000,
     screen,
   });
 
+  const confirm = plan.find((step) => step.type === 'manual_confirm');
   const confirmIndex = plan.findIndex((step) => step.type === 'manual_confirm');
-  const discoverTapIndex = plan.findIndex(
-    (step) => step.type === 'tap_text_region' && step.texts.includes('发现'),
-  );
-  const redTapIndex = plan.findIndex(
-    (step) => step.type === 'tap_text_region' && step.texts.includes('RED'),
-  );
-  const redFallbackIndex = plan.findIndex(
-    (step) => step.type === 'tap' && step.label.includes('兜底点击小红书顶部 RED'),
-  );
-  const channelAssertIndex = plan.findIndex(
-    (step) => step.type === 'assert_ui_text' && step.label.includes('RED 视频频道'),
-  );
-  const cardTapIndex = plan.findIndex(
-    (step) => step.type === 'tap' && step.label.includes('首张视频卡片'),
-  );
-  const roomTextAssertIndex = plan.findIndex(
-    (step) => step.type === 'assert_ui_text' && step.label.includes('视频详情页文本证据'),
-  );
+  const foregroundIndex = plan.findIndex((step) => step.type === 'assert_foreground_package');
   const screenChangeIndex = plan.findIndex(
-    (step) => step.type === 'assert_screen_changes' && step.label.includes('小红书视频画面'),
+    (step) => step.type === 'assert_screen_changes' && step.label.includes('小红书视频'),
   );
   const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
   const firstSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
 
-  assert.ok(plan.some((step) => step.type === 'force_stop' && step.packageName === 'com.xingin.xhs'));
-  assert.equal(confirmIndex, -1);
-  assert.ok(discoverTapIndex > -1);
-  assert.ok(redTapIndex > discoverTapIndex);
-  assert.ok(redFallbackIndex > redTapIndex);
-  assert.equal(plan[redFallbackIndex].x, Math.round(screen.width * 0.214));
-  assert.equal(plan[redFallbackIndex].y, Math.round(screen.height * 0.125));
-  assert.ok(channelAssertIndex > redFallbackIndex);
-  assert.ok(cardTapIndex > channelAssertIndex);
-  assert.ok(roomTextAssertIndex > cardTapIndex);
-  assert.ok(screenChangeIndex > roomTextAssertIndex);
-  assert.equal(plan[screenChangeIndex].optional, undefined);
+  assert.equal(confirmIndex, 0);
+  assert.equal(confirm.confirmLabel, '我已进入视频，继续');
+  assert.match(confirm.message, /手动点入小红书.*视频/);
+  assert.equal(plan.some((step) => ['launch_app', 'force_stop', 'tap', 'tap_text', 'tap_text_region'].includes(step.type)), false);
+  assert.ok(foregroundIndex > confirmIndex);
+  assert.equal(plan[foregroundIndex].packageName, 'com.xingin.xhs');
+  assert.ok(screenChangeIndex > foregroundIndex);
   assert.ok(captureIndex > screenChangeIndex);
   assert.ok(firstSwipeIndex > captureIndex);
 });
@@ -221,7 +200,7 @@ test('XHS video feed uses a full-screen swipe instead of the long-press menu ges
   const feedSwipe = swipes[0];
   const distance = Math.abs(feedSwipe.y1 - feedSwipe.y2);
 
-  assert.ok(feedSwipe, 'expected a feed swipe after automatic video entry');
+  assert.ok(feedSwipe, 'expected a feed swipe after manual video entry');
   assert.ok(
     swipes.every((step) => Math.abs(step.y1 - step.y2) >= Math.round(screen.height * 0.5)),
     `XHS contains a swipe too short to switch videos: ${JSON.stringify(swipes)}`,
@@ -232,7 +211,7 @@ test('XHS video feed uses a full-screen swipe instead of the long-press menu ges
   assert.equal(feedSwipe.durationMs, 420);
 });
 
-test('XHS validates the video page before capture and feed swipes', () => {
+test('XHS validates the manually entered video before capture and feed swipes', () => {
   const plan = buildShortVideoPlan({
     app: { id: 'xiaohongshu', name: 'XHS', packageName: 'com.xingin.xhs' },
     durationMs: 30_000,
@@ -244,7 +223,8 @@ test('XHS validates the video page before capture and feed swipes', () => {
   const captureIndex = plan.findIndex((step) => step.type === 'start_capture');
   const feedSwipeIndex = plan.findIndex((step) => step.type === 'swipe');
 
-  assert.equal(confirmIndex, -1);
+  assert.equal(confirmIndex, 0);
+  assert.equal(plan[confirmIndex].type, 'manual_confirm');
   assert.ok(screenChangeIndex > -1, 'expected required playback validation');
   assert.ok(captureIndex > screenChangeIndex, 'capture should wait for video playback validation');
   assert.ok(feedSwipeIndex > captureIndex, 'feed swipes should wait for capture boundary');

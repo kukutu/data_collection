@@ -1,3 +1,5 @@
+import { startCaptureBeforeAction } from './capture-timing.js';
+
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function nodes(snapshot) {
@@ -107,8 +109,9 @@ export async function executeWecomVoipCall({ device, app, callType, camera = fal
     if (!plus) throw new Error('消息页第一个会话无法发起通话');
     await tap(plus);
     await waitTap('语音通话');
-    initiated = true;
+    await startCaptureBeforeAction(startCapture, sleep);
     await waitTap(callType === 'audio' ? '语音通话' : '视频通话', true);
+    initiated = true;
     onStep(2, '等待对方接听企业微信通话');
     let connected = false;
     for (let i = 0; i < 30; i++) {
@@ -153,7 +156,6 @@ export async function executeWecomVoipCall({ device, app, callType, camera = fal
     const ready = inspectWecomCall(s);
     if (!ready.connected || ready.camera !== camera || (shareScreen && !ready.sharing)) throw new Error('企业微信采集前通话状态异常');
     onStep(4, '企业微信通话已就绪，开始计时和采集');
-    await startCapture?.();
     const started = now();
     while (now() - started < durationMs) {
       await sleep(Math.min(5000, durationMs - (now() - started)));

@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 export const XUNLEI_UPLOAD_MEDIA_WORKFLOW_ID = 'upload-download:xunlei:upload-media';
 export const XUNLEI_UPLOAD_MEDIA_VALIDATION_MODE = 'xunlei_upload_media_v1';
@@ -152,8 +153,8 @@ export async function executeXunleiUploadMedia({
     await stage(
       'capture_started',
       '开始采集迅雷上传流量和屏幕',
-      () => startCapture(),
-      '已确认首个媒体项，开始记录正式上传过程',
+      () => startCaptureBeforeAction(startCapture, sleep),
+      '已在确认上传前预留1秒采集窗口',
     );
   }
 

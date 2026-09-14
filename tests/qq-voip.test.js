@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executeQqVoipCall, inspectQqCall, firstQqConversation } from '../server/src/skills/qq-voip.js';
 import { parseTaskFallback } from '../server/src/task-parser.js';
-import { applyWorkflowParameters } from '../server/src/harness.js';
+import { TaskManager, applyWorkflowParameters } from '../server/src/harness.js';
+import { loadApps } from '../server/src/app-registry.js';
 import { evaluateSafety } from '../server/src/safety.js';
 import { getWorkflowDefinition } from '../server/src/workflow-registry.js';
 
@@ -46,11 +47,11 @@ for (const type of ['audio', 'video']) {
       const run = executeQqVoipCall({ device, app, callType: type, durationMs: 2000,
         now: () => clock,
         sleep: async ms => { if (cancel && captureAt !== undefined) throw new Error('cancelled'); clock += ms; },
-        startCapture: async () => { assert.equal(state, 'call'); captureAt = clock; },
+        startCapture: async () => { assert.equal(state, 'menu'); captureAt = clock; },
       });
       if (cancel) await assert.rejects(run, /cancelled/);
-      else { await run; assert.equal(clock - captureAt, 2000); }
-      assert.equal(hungup, true);
+        else { await run; assert.ok(clock - captureAt >= 2000); }
+      assert.equal(hungup, !cancel);
     }
   });
 }
@@ -63,3 +64,41 @@ test('QQ parser and shortcuts preserve type, first-conversation targeting and du
   assert.equal(evaluateSafety(parsed).allowed, true);
   assert.equal(evaluateSafety({ ...parsed, targetMode: 'named' }).allowed, false);
 });
+
+test('TaskManager routes QQ VoIP to the QQ executor', async () => {
+  let received = null;
+  const manager = new TaskManager({
+    adb: {},
+    apps: loadApps(),
+    qqVoipExecutor: async (options) => {
+      received = options;
+      return {
+        validationMode: 'qq_voip_call_v1',
+        validationChecks: [{ id: 'route', status: 'passed' }],
+        effectiveDurationMs: 1000,
+      };
+    },
+  });
+
+  const started = manager.start({ taskText: 'QQ音频通话1秒', parseMode: 'rules' });
+  const completed = await waitForTask(manager, started.id, (task) => task.status === 'completed');
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.parsed.intent, 'qq_voip_call');
+  assert.equal(received.app.id, 'qq');
+  assert.equal(received.callType, 'audio');
+  assert.equal(received.durationMs, 1000);
+});
+
+async function waitForTask(manager, taskId, predicate) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const task = manager.snapshot(taskId);
+    if (predicate(task)) return task;
+    if (['failed', 'blocked', 'stopped'].includes(task.status)) {
+      throw new Error(`Task reached terminal state ${task.status}: ${task.error || ''}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for task ${taskId}`);
+}

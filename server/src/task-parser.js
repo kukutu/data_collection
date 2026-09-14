@@ -89,6 +89,22 @@ export function parseTaskFallback(taskText, apps = []) {
     return { intent: 'baidu_netdisk_upload', appName, mediaType: /文档/.test(text) ? 'document' : /视频/.test(text) ? 'video' : 'image' };
   }
 
+  if (app?.id === 'meetime' && /(通话|拨打|打电话|呼叫)/.test(text)) {
+    const phoneNumber = text.match(/(?:\+?86[ -]?)?1[3-9]\d{9}/)?.[0]?.replace(/[ -]/g, '') || '';
+    if (!phoneNumber) {
+      return { intent: 'missing_parameter', appName, field: 'phoneNumber', message: '畅连通话缺少电话号码' };
+    }
+    const video = /视频/.test(text) && !/不开视频|不视频|关闭视频/.test(text);
+    return {
+      intent: 'meetime_voip_call',
+      appName,
+      phoneNumber,
+      callType: video ? 'video' : 'audio',
+      video,
+      durationMs: parseDurationMs(text) ?? 30000,
+    };
+  }
+
   if (['dingtalk', 'wecom'].includes(app?.id) && /语音通话|音频通话|视频通话/.test(text) && !/音视频通话/.test(text)) {
     const video = /视频通话/.test(text);
     return { intent: app.id === 'wecom' ? 'wecom_voip_call' : 'dingtalk_voip_call', appName, targetMode: 'first', callType: video ? 'video' : 'audio',

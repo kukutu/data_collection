@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 export const WECHAT_AUDIO_CALL_WORKFLOW_ID = 'voip:wechat:audio-call';
 export const WECHAT_VIDEO_CALL_WORKFLOW_ID = 'voip:wechat:video-call';
@@ -294,6 +295,15 @@ export async function executeWechatVoipCall({
       '语音通话和视频通话选项已显示',
     );
 
+    if (startCapture) {
+      await runStage(
+        'capture_started',
+        `开始采集微信${typeLabel}`,
+        () => startCaptureBeforeAction(startCapture, sleep),
+        `${typeLabel}拨号前已预留1秒采集窗口`,
+      );
+    }
+
     const callSnapshot = await runStage(
       'call_started',
       `发起${typeLabel}`,
@@ -314,15 +324,6 @@ export async function executeWechatVoipCall({
       },
       (snapshot) => describeCallState(snapshot, typeLabel),
     );
-
-    if (startCapture) {
-      await runStage(
-        'capture_started',
-        `开始采集微信${typeLabel}`,
-        () => startCapture(),
-        `${typeLabel}拨号页已显示`,
-      );
-    }
 
     await runStage(
       'call_observed',
@@ -395,7 +396,17 @@ async function observeWechatCall({ device, type, durationMs, sleep }) {
       remainingMs -= chunkMs;
     }
     snapshot = await device.getUiTextSnapshot();
-    assertCallType(snapshot, type);
+    if (isWechatCallState(snapshot)) {
+      assertCallType(snapshot, type);
+      continue;
+    }
+
+    // Harmony may temporarily expose only the video surface after the
+    // controls auto-hide. That is still an active call, so keep observing
+    // and let the cleanup path reveal the controls before hanging up.
+    if (isWechatCallSurface(snapshot)) continue;
+
+    throw new Error('微信通话状态已提前结束');
   } while (remainingMs > 0);
 
   return snapshot;
@@ -446,7 +457,13 @@ async function endWechatCall({ device, screen, delays, sleep }) {
 
   while (Date.now() <= deadline) {
     lastSnapshot = await device.getUiTextSnapshot().catch(() => null);
-    if (lastSnapshot && !isWechatCallState(lastSnapshot)) return lastSnapshot;
+    if (
+      lastSnapshot &&
+      !isWechatCallState(lastSnapshot) &&
+      !isWechatCallSurface(lastSnapshot)
+    ) {
+      return lastSnapshot;
+    }
 
     let controls = lastSnapshot;
     let target =
@@ -464,7 +481,13 @@ async function endWechatCall({ device, screen, delays, sleep }) {
     await sleep(delays.hangupSettleMs);
 
     lastSnapshot = await device.getUiTextSnapshot().catch(() => null);
-    if (lastSnapshot && !isWechatCallState(lastSnapshot)) return lastSnapshot;
+    if (
+      lastSnapshot &&
+      !isWechatCallState(lastSnapshot) &&
+      !isWechatCallSurface(lastSnapshot)
+    ) {
+      return lastSnapshot;
+    }
   }
 
   throw new Error('微信通话未能通过页面挂断控件结束');
@@ -509,6 +532,11 @@ function assertCallType(snapshot, type) {
   if (type === 'audio' && hasCameraControls) {
     throw new Error('已进入微信通话页，但当前不是语音通话');
   }
+}
+
+function isWechatCallSurface(snapshot) {
+  const text = (snapshot?.values || []).join('\n');
+  return /切换画面|屏幕锁定|添加新成员|摄像头|翻转|模糊背景|麦克风|扬声器/.test(text);
 }
 
 function describeCallState(snapshot, typeLabel) {

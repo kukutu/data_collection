@@ -35,6 +35,21 @@ const numberParam = (id, label, overrides = {}) => ({
   ...overrides,
 });
 
+// These business flows can be run repeatedly.  Keep the controls in the
+// catalog so the UI can configure one complete iteration and the interval
+// between iterations without changing the existing workflow parameters.
+const REPEATABLE_CATEGORY_IDS = new Set(['voip', 'meeting', 'upload-download']);
+const REPEAT_PARAMS = [
+  numberParam('repeatCount', '重复次数', { defaultValue: 1, min: 1, max: 20 }),
+  durationParam({
+    id: 'repeatInterval',
+    label: '重复间隔',
+    defaultValue: 5,
+    defaultUnit: '秒',
+    min: 1,
+  }),
+];
+
 const selectParam = (id, label, options, defaultValue) => ({
   id,
   label,
@@ -57,7 +72,6 @@ const CATEGORY_DEFINITIONS = [
       ['wecom', '音频通话'],
       ['wecom', '视频通话'],
       ['meetime', '音频通话'],
-      ['meetime', '视频通话'],
       ['welink', '音频通话'],
       ['welink', '视频通话'],
     ],
@@ -84,6 +98,15 @@ const CATEGORY_DEFINITIONS = [
         functionId: 'video-call',
         commandTemplate: '在{appName}向消息页第一个联系人发起视频通话 {duration} 开视频{camera} 共享屏幕{shareScreen}',
         params: [durationParam({ label: '通话时长' }), booleanParam('camera', '开启摄像头'), booleanParam('shareScreen', '共享屏幕')],
+      },
+      'meetime:音频通话': {
+        functionId: 'audio-call',
+        commandTemplate: '在{appName}拨打{phoneNumber}，保持{duration}，视频通话{video}',
+        params: [
+          textParam('phoneNumber', '电话号码', { required: true }),
+          durationParam({ label: '通话时长' }),
+          booleanParam('video', '视频通话', false),
+        ],
       },
       音频通话: {
         functionId: 'audio-call',
@@ -377,6 +400,9 @@ const VERIFIED_WORKFLOW_IDS = new Set([
   'short-video:bilibili:short-video-feed',
   'voip:qq:audio-call',
   'voip:qq:video-call',
+  'voip:welink:audio-call',
+  'voip:welink:video-call',
+  'voip:meetime:audio-call',
   'meeting:tencent-meeting:join-meeting',
   'short-video:douyin:short-video-feed',
   'short-video:kuaishou:short-video-feed',
@@ -424,7 +450,11 @@ export function getWorkflowCatalog(
       const functionId = variant?.functionId || category.functionId;
       const workflowId = `${category.id}:${appId}:${functionId}`;
       const app = apps.find((candidate) => candidate.id === appId);
-      const params = clone(variant?.params || category.params);
+      const baseParams = variant?.params || category.params;
+      const params = clone([
+        ...baseParams,
+        ...(REPEATABLE_CATEGORY_IDS.has(category.id) ? REPEAT_PARAMS : []),
+      ]);
       return {
         id: workflowId,
         categoryId: category.id,

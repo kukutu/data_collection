@@ -466,7 +466,11 @@ async function pollTask() {
 }
 
 function renderTask(task) {
-  elements.taskState.textContent = `${task.status || 'unknown'} ${task.stepIndex || 0}/${task.totalSteps || 0}`;
+  const repeatProgress =
+    Number(task.repeatCount) > 1
+      ? ` · 第 ${task.repeatIndex || 0}/${task.repeatCount} 次`
+      : '';
+  elements.taskState.textContent = `${task.status || 'unknown'} ${task.stepIndex || 0}/${task.totalSteps || 0}${repeatProgress}`;
   elements.confirmMessage.textContent = task.pendingConfirmation?.message || '';
   elements.continueBtn.textContent =
     task.pendingConfirmation?.confirmLabel || '确认完成，继续';
@@ -480,6 +484,7 @@ function renderTask(task) {
 
 function renderCapture(task) {
   const capture = task.capture;
+  const captures = Array.isArray(task.captures) ? task.captures : [];
   const captureError = task.captureError;
   elements.captureResult.hidden = !capture && !captureError;
   if (!capture && !captureError) return;
@@ -490,7 +495,9 @@ function renderCapture(task) {
     return;
   }
 
-  const errorCount = capture.errors?.length || 0;
+  const errorCount = captures.length
+    ? captures.reduce((total, item) => total + (item.errors?.length || 0), 0)
+    : capture.errors?.length || 0;
   const screenMode =
     capture.screenRecordingMode === 'harmony_system'
       ? '系统录屏'
@@ -504,8 +511,16 @@ function renderCapture(task) {
         `${screenMode} ${capture.components.screen?.status || capture.components.screen}`,
       ].join(' · ')
     : '';
-  elements.captureState.textContent = `${capture.status || 'unknown'}${errorCount ? ` · ${errorCount} 个错误` : ''}`;
-  elements.captureOutput.textContent = [capture.outputDir, componentText].filter(Boolean).join('\n');
+  const repeatState =
+    Number(task.repeatCount) > 1
+      ? ` · 已完成 ${captures.length}/${task.repeatCount} 次采集`
+      : '';
+  const outputDirs =
+    captures.length > 1
+      ? captures.map((item, index) => `第 ${index + 1} 次: ${item.outputDir}`).join('\n')
+      : capture.outputDir;
+  elements.captureState.textContent = `${capture.status || 'unknown'}${repeatState}${errorCount ? ` · ${errorCount} 个错误` : ''}`;
+  elements.captureOutput.textContent = [outputDirs, componentText].filter(Boolean).join('\n');
 }
 
 function setConfirmDialogOpen(open) {

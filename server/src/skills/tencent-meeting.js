@@ -1,4 +1,5 @@
 import { inflateSync } from 'node:zlib';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 const TENCENT_MEETING_BUNDLE = 'com.tencent.meeting.app';
 const SHARE_DIALOG_BUNDLE = 'SCBSysDialogDefault48';
@@ -14,6 +15,7 @@ const DEFAULT_TIMINGS = {
   afterQuickMeetingTapMs: 1200,
   afterJoinMeetingTapMs: 1200,
   afterMeetingIdInputMs: 500,
+  afterMeetingKeyboardDismissMs: 500,
   afterPasswordInputMs: 500,
   afterCameraTapMs: 500,
   afterEnterMeetingMs: 1800,
@@ -426,6 +428,26 @@ async function executeTencentMeeting({
         );
       }
       pass('meeting_id_entered', '输入会议号', meetingId);
+      if (isTencentNumericKeyboardSnapshot(setupSnapshot)) {
+        await device.keyevent('KEYCODE_BACK').catch(() => {});
+        await sleep(waits.afterMeetingKeyboardDismissMs);
+        setupSnapshot = await waitForValue(
+          () => device.getUiTextSnapshot(),
+          (snapshot) =>
+            snapshot &&
+            isTencentJoinSetupSnapshot(snapshot) &&
+            snapshotContainsMeetingId(snapshot, meetingId) &&
+            !isTencentNumericKeyboardSnapshot(snapshot),
+          waits,
+        );
+        if (!setupSnapshot) {
+          fail(
+            'meeting_id_entered',
+            '输入会议号',
+            '关闭数字键盘后未能保持腾讯会议设置页',
+          );
+        }
+      }
     }
 
     let camera = inspectTencentCameraToggle(setupSnapshot.layout, size);
@@ -470,6 +492,10 @@ async function executeTencentMeeting({
         '进入会议',
         `设置页未找到“${enterLabel}”按钮`,
       );
+    }
+    if (typeof startCapture === 'function') {
+      await startCaptureBeforeAction(startCapture, sleep);
+      pass('capture_started', '任务采集', '已在进入会议前预留1秒采集窗口');
     }
     await device.tap({
       x: Math.round((enterNode.bounds.x1 + enterNode.bounds.x2) / 2),
@@ -549,11 +575,6 @@ async function executeTencentMeeting({
       meetingState.focus.activity || 'NXHostUIAbility',
     );
     meetingEntered = true;
-
-    if (typeof startCapture === 'function') {
-      await startCapture();
-      pass('capture_started', '任务采集', '进入会议后已启动采集');
-    }
 
     if (desiredShareScreen) {
       let shareDialogState = null;
@@ -1103,6 +1124,11 @@ function isTencentJoinSetupSnapshot(snapshot) {
     text.includes('开启视频') &&
     text.includes('加入会议')
   );
+}
+
+function isTencentNumericKeyboardSnapshot(snapshot) {
+  const values = new Set((snapshot?.values || []).map((value) => String(value)));
+  return ['+', '-', '=', '/'].every((value) => values.has(value));
 }
 
 function isTencentMeetingSetupSnapshot(snapshot) {

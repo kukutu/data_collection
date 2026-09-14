@@ -1,3 +1,5 @@
+import { startCaptureBeforeAction } from './capture-timing.js';
+
 const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 
 export const WELINK_AUDIO_CALL_WORKFLOW_ID = 'voip:welink:audio-call';
@@ -19,9 +21,16 @@ export async function executeWelinkVoipCall({
     throw new Error('WeLink 通话类型无效');
   }
   const effectiveDurationMs = Math.min(MAX_DURATION_MS, Math.max(1000, Number(durationMs) || 30000));
+  const screen = await device.getScreenSize?.().catch(() => ({ width: 1280, height: 2832 })) || { width: 1280, height: 2832 };
   const checks = [];
   let step = 0;
   let initiated = false;
+  let captureStarted = false;
+  const beginCapture = async () => {
+    if (captureStarted) return;
+    await startCaptureBeforeAction(startCapture, sleep);
+    captureStarted = true;
+  };
   const stage = async (id, label, action) => {
     step += 1;
     onStep(step, label, 6);
@@ -84,6 +93,12 @@ export async function executeWelinkVoipCall({
   const hangup = async () => {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const current = await snapshot();
+      const stopSharing = findClickableAncestor(current, '停止共享') || findAnyText(current, ['停止共享', '结束共享']);
+      if (stopSharing) {
+        await tapNode(stopSharing);
+        await sleep(900);
+        continue;
+      }
       const node = flatten(current).find((candidate) =>
         ['挂断', '结束通话', '结束会议'].some((text) => candidate.textValues.includes(text)) ||
         ['handup', 'HWMHeaderMenuItemHangup'].includes(candidate.id),
@@ -142,70 +157,91 @@ export async function executeWelinkVoipCall({
       if (!hasLayoutText(current, '发送')) {
         throw new Error('WeLink 当前未处于联系人聊天页');
       }
-      const plusIcon = flatten(current).find((node) => node.id === 'im_chat_tool_bar_more');
-      const plusCandidates = flatten(current).filter((node) =>
-        node.bounds.x1 > 0.82 * 1280 && node.bounds.y1 > 0.45 * 2832 &&
-        node.bounds.x2 <= 1280 && node.bounds.y2 <= 2832 &&
-        String(node.clickable).toLowerCase() === 'true',
-      ).sort((a, b) => b.centerX - a.centerX || b.centerY - a.centerY);
-      const plus = plusIcon || plusCandidates[0];
-      if (!plus) throw new Error('WeLink 消息页未找到右下角加号');
-      await tapNode(plus);
-      const menuLabel = callType === 'audio' ? '语音通话' : '视频会议';
-      let menuItem;
-      try {
-        menuItem = await waitClickableWithText(menuLabel);
-      } catch {
-        // HarmonyOS occasionally drops the first tap while the chat toolbar settles.
-        await device.tap({ x: 1182, y: 2643 });
-        menuItem = await waitClickableWithText(menuLabel);
-      }
-      const knownMeetingCards = findMeetingCards(current).map((card) => card.key);
       if (callType === 'video') {
-        await tapNode(menuItem.node);
-        let card = null;
+        // Re-enter the latest meeting popup already present in the one-to-one
+        // conversation. Creating a new meeting from the plus menu can trigger
+        // the delayed “查询未入会人员” prompt on this Harmony build.
+        const card = findMeetingCards(current).at(-1);
+        if (!card) throw new Error('WeLink 双方对话中未找到最后一个视频会议弹窗');
+        onStep(step, '进入双方对话最后一个视频会议弹窗', 6);
+        await beginCapture();
+        await tapNode(card);
         for (let attempt = 0; attempt < 20; attempt += 1) {
           current = await snapshot();
           if (isMeetingPage(current)) {
-            card = { key: '__direct_meeting__' };
-            break;
-          }
-          card = findMeetingCards(current).find((candidate) => !knownMeetingCards.includes(candidate.key));
-          if (card) {
-            await tapNode(card);
             break;
           }
           await sleep(500);
         }
-        if (!card) throw new Error('WeLink 未找到刚创建的视频会议卡片');
-        if (card.key !== '__direct_meeting__') {
-          for (let attempt = 0; attempt < 20; attempt += 1) {
-            current = await snapshot();
-            if (isMeetingPage(current)) break;
-            await sleep(500);
-          }
-        }
         if (!isMeetingPage(current)) throw new Error('WeLink 点击会议卡片后未进入视频会议');
       } else {
-        await tapMenuItem(menuItem.node, menuLabel);
+        const plusIcon = flatten(current).find((node) => node.id === 'im_chat_tool_bar_more');
+        const plusCandidates = flatten(current).filter((node) =>
+          node.bounds.x1 > 0.82 * 1280 && node.bounds.y1 > 0.45 * 2832 &&
+          node.bounds.x2 <= 1280 && node.bounds.y2 <= 2832 &&
+          String(node.clickable).toLowerCase() === 'true',
+        ).sort((a, b) => b.centerX - a.centerX || b.centerY - a.centerY);
+        const plus = plusIcon || plusCandidates[0];
+        if (!plus) throw new Error('WeLink 消息页未找到右下角加号');
+        await tapNode(plus);
+        let menuItem;
+        try {
+          menuItem = await waitClickableWithText('语音通话');
+        } catch {
+          // HarmonyOS occasionally drops the first tap while the chat toolbar settles.
+          await device.tap({ x: 1182, y: 2643 });
+          menuItem = await waitClickableWithText('语音通话');
+        }
+        if (typeof device.tapText === 'function') await device.tapText('语音通话'); else await tapMenuItem(menuItem.node, '语音通话');
       }
       current = await snapshot();
-      const currentAfterEntry = current;
-      if (hasLayoutText(currentAfterEntry, 'WeLink拨打')) {
-        const terminal = await waitText('软终端');
-        await tapNode(terminal.node);
+      // WeLink Harmony shows a routing sheet after either call type. The call
+      // must be routed through the soft terminal before connection polling.
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        current = await snapshot();
+        const terminal = findClickableAncestor(current, '软终端') || flatten(current).find((node) => node.textValues.includes('软终端'));
+        if (terminal) {
+          onStep(step, '点击软终端', 6);
+          await beginCapture();
+          if (typeof device.tapText === 'function' && terminal.textValues?.includes('软终端')) await device.tapText('软终端'); else await tapNode(terminal);
+          await sleep(900);
+          break;
+        }
+        await sleep(400);
       }
       initiated = true;
     });
 
     await stage('call_connected', '等待 WeLink 通话接通', async () => {
       for (let attempt = 0; attempt < 30; attempt += 1) {
-        const current = await snapshot();
+        let current = await snapshot();
+        if (hasLayoutText(current, '是否需要查询未入会人员?')) {
+          const dismissRoster = findClickableAncestor(current, '取消');
+          if (dismissRoster) {
+            onStep(step, '关闭未入会人员查询提示', 6);
+            await tapNode(dismissRoster);
+            await sleep(700);
+            continue;
+          }
+        }
+        if (hasLayoutText(current, '是否需要开启云录制?')) {
+          const dismissRecording = findClickableAncestor(current, '取消');
+          if (dismissRecording) {
+            onStep(step, '关闭云录制提示', 6);
+            await tapNode(dismissRecording);
+            await sleep(700);
+            continue;
+          }
+        }
+        const softTerminal = findClickableAncestor(current, '软终端');
+        if (softTerminal) { await tapNode(softTerminal); await sleep(800); continue; }
         if (isConnected(current)) {
           const cancel = findClickableAncestor(current, '取消');
-          if (cancel && hasLayoutText(current, '是否需要查询未入会人员?')) {
+          if (cancel && (hasLayoutText(current, '是否需要查询未入会人员?') ||
+            hasLayoutText(current, '是否需要开启云录制?'))) {
             await tapNode(cancel);
             await sleep(500);
+            current = await snapshot();
           }
           return current;
         }
@@ -216,7 +252,23 @@ export async function executeWelinkVoipCall({
 
     await stage('options_applied', '设置 WeLink 视频和共享屏幕选项', async () => {
       let current = await snapshot();
-      if (callType === 'video') {
+      if (hasLayoutText(current, '是否需要查询未入会人员?')) {
+        const dismissRoster = findClickableAncestor(current, '取消');
+        if (dismissRoster) {
+          await tapNode(dismissRoster);
+          await sleep(700);
+          current = await snapshot();
+        }
+      }
+      if (hasLayoutText(current, '是否需要开启云录制?')) {
+        const dismissRecording = findClickableAncestor(current, '取消');
+        if (dismissRecording) {
+          await tapNode(dismissRecording);
+          await sleep(700);
+          current = await snapshot();
+        }
+      }
+      if (callType === 'video' || camera || shareScreen) {
         // Controls auto-hide on HarmonyOS. Only wake the surface when the
         // elapsed-time/hangup controls are absent; tapping an already visible
         // surface hides them again.
@@ -228,6 +280,22 @@ export async function executeWelinkVoipCall({
           current = await snapshot();
         }
       }
+      if (hasLayoutText(current, '是否需要查询未入会人员?')) {
+        const dismissRoster = findClickableAncestor(current, '取消');
+        if (dismissRoster) {
+          await tapNode(dismissRoster);
+          await sleep(700);
+          current = await snapshot();
+        }
+      }
+      if (hasLayoutText(current, '是否需要开启云录制?')) {
+        const dismissRecording = findClickableAncestor(current, '取消');
+        if (dismissRecording) {
+          await tapNode(dismissRecording);
+          await sleep(700);
+          current = await snapshot();
+        }
+      }
       if (camera) {
         const state = getCameraState(current);
         const toggle = findMeetingControl(current, '视频') || findAnyText(current, ['开启摄像头', '打开摄像头', '摄像头']);
@@ -235,7 +303,8 @@ export async function executeWelinkVoipCall({
           await tapNode(toggle);
           await sleep(700);
           current = await snapshot();
-          const allowCamera = findPermissionButton(current, /相机|摄像头/);
+          const allowCamera = findPermissionButton(current, /相机|摄像头/) ||
+            findClickableAncestor(current, '允许');
           if (allowCamera) {
             await tapNode(allowCamera);
             await sleep(700);
@@ -257,38 +326,76 @@ export async function executeWelinkVoipCall({
       if (shareScreen) {
         current = await snapshot();
         if (isScreenSharing(current)) return;
-        const sideItems = flatten(current).filter((node) => /^HWMSideMenuItem-/.test(node.id));
-        const more = findMeetingControl(current, '更多');
-        if (!sideItems.length && more) {
-          await tapNode(more);
-          await sleep(400);
+        if (hasLayoutText(current, '是否需要开启云录制?')) {
+          const dismissRecording = findClickableAncestor(current, '取消');
+          if (dismissRecording) {
+            await tapNode(dismissRecording);
+            await sleep(700);
+            current = await snapshot();
+          }
+        }
+        for (let attempt = 0; attempt < 8 && !hasLayoutText(current, '共享'); attempt += 1) {
+          const more = findMeetingControl(current, '更多');
+          if (more) {
+            await tapNode(more);
+          } else if (isMeetingPage(current)) {
+            const surface = flatten(current).find((node) => ['HWMVideoItem', 'maxVideo'].includes(node.id)) ||
+              flatten(current).find((node) => node.id === 'meeting_page_root');
+            await tapNode(surface || { bounds: { x1: 0, y1: 0, x2: 1280, y2: 2832 }, centerX: 640, centerY: 1400 });
+          } else {
+            break;
+          }
+          await sleep(700);
           current = await snapshot();
         }
-        const share = findMeetingControl(current, '共享屏幕') || findMeetingControl(current, '屏幕共享') ||
+        const share = findMeetingControl(current, '共享') || findMeetingControl(current, '共享屏幕') || findMeetingControl(current, '屏幕共享') ||
           findMeetingControl(current, '演示屏幕') || findMeetingControl(current, '屏幕演示') ||
-          findAnyText(current, ['共享屏幕', '屏幕共享', '演示屏幕', '屏幕演示']);
-        // This Harmony build exposes screen sharing as the first icon in the
-        // side action list, without an accessibility label. The action is
-        // accepted only after a sharing-active state is observed.
-        const shareAction = share || flatten(current).find((node) => node.id === 'HWMSideMenuItem-91');
-        if (!shareAction) throw new Error('WeLink 未找到共享屏幕控件');
-        await tapNode(shareAction);
+          findAnyText(current, ['共享', '共享屏幕', '屏幕共享', '演示屏幕', '屏幕演示']);
+        if (!share) throw new Error('WeLink 未找到共享屏幕控件');
+        onStep(step, '点击更多菜单中的共享', 6);
+        await tapNode(share);
         for (let attempt = 0; attempt < 12; attempt += 1) {
           await sleep(700);
           current = await snapshot();
-          const permission = findPermissionButton(current, /屏幕|投屏|录制/);
+          if (hasLayoutText(current, '是否需要查询未入会人员?')) {
+            const dismissRoster = findClickableAncestor(current, '取消');
+            if (dismissRoster) {
+              onStep(step, '关闭未入会人员查询提示', 6);
+              await tapNode(dismissRoster);
+              await sleep(700);
+              continue;
+            }
+          }
+          if (hasLayoutText(current, '是否需要开启云录制?')) {
+            const dismissRecording = findClickableAncestor(current, '取消');
+            if (dismissRecording) {
+              await tapNode(dismissRecording);
+              await sleep(700);
+              continue;
+            }
+          }
+          const permission = findPermissionButton(current, /屏幕|投屏|录制/) ||
+            findClickableAncestor(current, '允许') ||
+            findClickableAncestor(current, '开始投屏') ||
+            findClickableAncestor(current, '开始录制');
+          if (attempt === 0) {
+            onStep(step, `共享状态 cloud=${hasLayoutText(current, '是否需要开启云录制?')} permission=${Boolean(permission)} active=${isScreenSharing(current)}`, 6);
+          }
           if (permission) {
+            onStep(step, '允许 WeLink 共享屏幕', 6);
             await tapNode(permission);
             continue;
           }
-          if (isScreenSharing(current)) break;
+          if (isScreenSharing(current)) {
+            onStep(step, '确认 WeLink 正在共享屏幕', 6);
+            break;
+          }
         }
         if (!isScreenSharing(current)) throw new Error('WeLink 共享屏幕未确认生效');
       }
     });
 
     await stage('duration_observed', '按设置时长保持 WeLink 通话', async () => {
-      await startCapture?.();
       const started = now();
       while (now() - started < effectiveDurationMs) {
         await sleep(Math.min(5000, effectiveDurationMs - (now() - started)));
@@ -322,9 +429,11 @@ export function isConnected(snapshot) {
     (nodes.some((node) => node.id === 'HWMVideoItem') ||
       nodes.some((node) => node.id === 'confTimeSection-ElapsedTime' &&
         node.textValues.some((text) => /^\d{1,2}:\d{2}$/.test(text))));
+  const sharing = nodes.some((node) => node.id === 'meeting_page_root') &&
+    nodes.some((node) => node.id === 'HWMScreenShareMask' || node.id === 'HWMScreenShareMask-Text');
   const classic = nodes.some((node) => node.textValues.some((text) => /挂断|结束通话|结束会议/.test(text))) &&
     nodes.some((node) => node.textValues.some((text) => /^\d{1,2}:\d{2}$/.test(text)));
-  return meeting || classic;
+  return meeting || sharing || classic;
 }
 
 export function hasMeetingControls(snapshot) {
@@ -342,7 +451,9 @@ export function getCameraState(snapshot) {
 
 export function isScreenSharing(snapshot) {
   const values = snapshot?.values || [];
-  return values.some((value) => /正在共享屏幕|停止共享|共享屏幕中|正在投屏/.test(value));
+  if (values.some((value) => /正在共享屏幕|停止共享|共享屏幕中|正在投屏/.test(value))) return true;
+  const nodes = flatten(snapshot);
+  return nodes.some((node) => node.id === 'HWMScreenShareMask');
 }
 
 function findPermissionButton(snapshot, subject) {

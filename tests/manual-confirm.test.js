@@ -33,6 +33,23 @@ test('TaskManager pauses at manual confirmation and continues after confirmation
   );
 });
 
+test('XHS short video waits for the user to enter a video before validation starts', async () => {
+  const adb = createFakeAdb('com.xingin.xhs');
+  const manager = new TaskManager({ adb, apps: loadApps() });
+  const started = manager.start({ taskText: '刷1秒xhs视频', parseMode: 'rules' });
+
+  const waiting = await waitForTask(manager, started.id, (task) => task.status === 'waiting_confirmation');
+
+  assert.match(waiting.pendingConfirmation.message, /手动点入小红书.*视频/);
+  assert.equal(waiting.pendingConfirmation.confirmLabel, '我已进入视频，继续');
+  assert.deepEqual(adb.launchedPackages, []);
+  assert.deepEqual(adb.stoppedPackages, []);
+
+  assert.equal(manager.continue(started.id), true);
+  const completed = await waitForTask(manager, started.id, (task) => task.status === 'completed');
+  assert.equal(completed.status, 'completed');
+});
+
 test('completed tasks do not automatically mark an app as tested', async () => {
   const adb = createFakeAdb();
   const apps = loadApps();
@@ -82,6 +99,8 @@ function createFakeAdb(focusPackage = 'com.xingin.xhs') {
     swipes: [],
     keyevents: [],
     deviceLocks: [],
+    launchedPackages: [],
+    stoppedPackages: [],
     async beginSession({ owner }) {
       const lock = {
         id: `lock-${adb.deviceLocks.length + 1}`,
@@ -98,8 +117,12 @@ function createFakeAdb(focusPackage = 'com.xingin.xhs') {
     async endSession(lock) {
       adb.deviceLocks.push({ type: 'end', lock });
     },
-    async forceStopPackage() {},
-    async launchPackage() {},
+    async forceStopPackage(packageName) {
+      adb.stoppedPackages.push(packageName);
+    },
+    async launchPackage(packageName) {
+      adb.launchedPackages.push(packageName);
+    },
     async keyevent(code) {
       adb.keyevents.push(code);
     },

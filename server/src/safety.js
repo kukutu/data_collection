@@ -27,6 +27,7 @@ const ALLOWED_INTENTS = new Set([
   'dingtalk_voip_call',
   'wecom_voip_call',
   'welink_voip_call',
+  'meetime_voip_call',
   'tencent_quick_meeting',
   'dingtalk_quick_meeting',
   'feishu_quick_meeting',

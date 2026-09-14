@@ -1,3 +1,5 @@
+import { startCaptureBeforeAction } from './capture-timing.js';
+
 export const APP_STORE_DOWNLOAD_WORKFLOW_ID =
   'upload-download:app-store:download-app';
 export const APP_STORE_DOWNLOAD_VALIDATION_MODE = 'app_store_download_v1';
@@ -92,6 +94,10 @@ export async function executeAppStoreDownload({
 
     if (!isDownloadActive(result.status) && result.status !== '打开') {
       if (!result.action) throw new Error(`${targetApp.name}未找到安装按钮`);
+      if (startCapture && !captureStarted) {
+        await startCaptureBeforeAction(startCapture, sleep);
+        captureStarted = true;
+      }
       await device.tap(result.action);
       await sleep(1000);
     }
@@ -109,10 +115,6 @@ export async function executeAppStoreDownload({
     result = findTargetResult(snapshot, targetApp.name);
     downloadStarted = true;
     completed = result.status === '打开';
-    if (startCapture && !captureStarted) {
-      await startCapture();
-      captureStarted = true;
-    }
     return snapshot;
   });
 

@@ -1,3 +1,5 @@
+import { startCaptureBeforeAction } from './capture-timing.js';
+
 const HANGUP_ID = 'dav_id_5003:16064';
 const TIMER_ID = 'dav_id_5003:16406';
 const CAMERA_REVERSE_ID = 'dav_id_5003:16250_camera_reverse';
@@ -99,8 +101,9 @@ export async function executeQqVoipCall({ device, app, callType, durationMs = 30
     const menu = await snapshot();
     const option = nodes(menu).find(n => n.text === label);
     if (!option) throw new Error('QQ 第一个会话没有所需的单人通话入口');
-    initiated = true;
+    await startCaptureBeforeAction(startCapture, sleep);
     await tapNode(option);
+    initiated = true;
     report('等待对方接听并确认通话类型');
     let connected = false;
     for (let i = 0; i < 15; i++) {
@@ -123,7 +126,6 @@ export async function executeQqVoipCall({ device, app, callType, durationMs = 30
     }
     if (!connected) throw new Error('QQ 通话未接听，停止测试');
     checks.push({ id: 'call_connected', status: 'passed', detail: callType });
-    if (startCapture) await startCapture();
     report('按设置时长保持 QQ 通话');
     const deadline = now() + effectiveDurationMs;
     while (now() < deadline) {

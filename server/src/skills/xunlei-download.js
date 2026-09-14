@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 export const XUNLEI_DOWNLOAD_WORKFLOW_ID = 'upload-download:xunlei:download-file';
 export const XUNLEI_DOWNLOAD_VALIDATION_MODE = 'xunlei_download_v1';
@@ -88,6 +89,9 @@ export async function executeXunleiDownload({
   });
 
   try {
+    if (startCapture) {
+      await stage('capture_started', '开始采集迅雷下载流量', () => startCaptureBeforeAction(startCapture, sleep));
+    }
     await stage('download_started', '开始下载磁力任务', async () => {
       const snapshot = await getSnapshot(device);
       await tapTextNode(device, snapshot, '下载到手机', { minY: screen.height * 0.75 });
@@ -98,10 +102,6 @@ export async function executeXunleiDownload({
       if (!row) throw new Error('迅雷传输页未找到刚创建的下载任务');
       return transfer;
     });
-
-    if (startCapture) {
-      await stage('capture_started', '开始采集迅雷下载流量', () => startCapture());
-    }
 
     await stage('download_timed', `下载运行 ${formatDuration(safeDuration)}`, () => sleep(safeDuration));
   } finally {

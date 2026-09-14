@@ -10,7 +10,9 @@ export function buildCaptureReport({
   interfaceRef,
   phoneIp,
   startedAt,
+  captureStartedAt,
   stoppedAt,
+  captureStoppedAt,
   finishedAt,
   pcapFile,
   screenRecordingFile,
@@ -37,7 +39,9 @@ export function buildCaptureReport({
     `- Interface Ref: ${interfaceRef || ''}`,
     `- Phone IP: ${phoneIp || ''}`,
     `- Started At: ${startedAt || ''}`,
+    `- Capture Components Started At: ${captureStartedAt || ''}`,
     `- Stopped At: ${stoppedAt || ''}`,
+    `- Capture Components Stopped At: ${captureStoppedAt || ''}`,
     `- Finished At: ${finishedAt || ''}`,
     `- PCAP: ${pcapFile || rawPcap || ''}`,
     `- Screen Recording: ${screenRecordingFile || ''}`,
@@ -80,6 +84,7 @@ export function buildCaptureReport({
   lines.push('## Notes');
   lines.push('');
   lines.push('- Capture should be filtered by package-derived port mapping and time window.');
+  lines.push('- Screen, traffic, and port mapping components use the same start/stop batch timestamps.');
   lines.push('- High-risk actions such as payment, ticket grabbing, order submission, likes, follows, comments, and rewards are not automated.');
 
   return lines.join('\n');

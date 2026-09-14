@@ -1,3 +1,5 @@
+import { startCaptureBeforeAction } from './capture-timing.js';
+
 export const BAIDU_NETDISK_DOWNLOAD_WORKFLOW_ID =
   'upload-download:baidu-netdisk:download-file';
 export const BAIDU_NETDISK_DOWNLOAD_VALIDATION_MODE = 'baidu_netdisk_download_v1';
@@ -42,14 +44,22 @@ export async function executeBaiduNetdiskDownload({
     await device.launchPackage(app.packageName);
     let snapshot = await waitForSnapshot({
       device,
-      predicate: (value) => Boolean(findTextNode(value, '文件')),
-      timeoutMs: 12000,
+      predicate: (value) =>
+        Boolean(findBottomTextNode(value, '文件', screen)) ||
+        Boolean(findFirstSelectableRow(value)),
+      timeoutMs: 25000,
       sleep,
+      dismissClipboardPrompt: true,
       message: '百度网盘未打开',
     });
-    const fileTab = findBottomTextNode(snapshot, '文件', screen);
-    if (!fileTab) throw new Error('百度网盘未找到左下角文件入口');
-    await device.tap(fileTab);
+    // A cold launch can briefly expose the home/recent page before the
+    // bottom navigation is mounted. If the file list is already visible,
+    // keep it; otherwise tap the rendered bottom 文件 tab and wait again.
+    if (!findFirstSelectableRow(snapshot)) {
+      const fileTab = findBottomTextNode(snapshot, '文件', screen);
+      if (!fileTab) throw new Error('百度网盘未找到左下角文件入口');
+      await device.tap(fileTab);
+    }
     snapshot = await waitForSnapshot({
       device,
       predicate: (value) => findFirstSelectableRow(value) !== null,
@@ -78,13 +88,15 @@ export async function executeBaiduNetdiskDownload({
     const snapshot = await getSnapshot(device);
     const download = findBottomTextNode(snapshot, '下载', screen);
     if (!download) throw new Error('未找到底部下载操作');
-    await device.tap(download);
-    await openDownloadTasks({ device, screen, sleep });
-    downloadStarted = true;
     if (startCapture && !captureStarted) {
-      await startCapture();
+      await startCaptureBeforeAction(startCapture, sleep);
       captureStarted = true;
     }
+    await device.tap(download);
+    // Mark the task before opening the transfer page so an exception while
+    // the transfer surface is still loading still enters the cleanup path.
+    downloadStarted = true;
+    await openDownloadTasks({ device, screen, sleep });
   });
 
   await stage('download_waited', `等待下载${safeDuration}毫秒`, async () => {
@@ -155,7 +167,7 @@ function findTransferEntry(snapshot, screen) {
 }
 
 async function openDownloadTasks({ device, screen, sleep }) {
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + 25000;
   while (Date.now() < deadline) {
     const snapshot = await getSnapshot(device);
     if (findTextNode(snapshot, '全部任务') && findTextNode(snapshot, '全部清除')) return snapshot;
@@ -264,16 +276,38 @@ function parseBounds(value) {
 
 async function getSnapshot(device) { return device.getUiTextSnapshot(); }
 
-async function waitForSnapshot({ device, predicate, timeoutMs, sleep, message }) {
+async function waitForSnapshot({
+  device,
+  predicate,
+  timeoutMs,
+  sleep,
+  message,
+  dismissClipboardPrompt = false,
+}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const snapshot = await getSnapshot(device);
+    if (dismissClipboardPrompt && await acceptClipboardPrompt(device, snapshot, sleep)) {
+      continue;
+    }
     if (predicate(snapshot)) return snapshot;
     await sleep(350);
   }
   const snapshot = await getSnapshot(device);
+  if (dismissClipboardPrompt && await acceptClipboardPrompt(device, snapshot, sleep)) {
+    const next = await getSnapshot(device);
+    if (predicate(next)) return next;
+  }
   if (predicate(snapshot)) return snapshot;
   throw new Error(message);
+}
+
+async function acceptClipboardPrompt(device, snapshot, sleep) {
+  const allow = findTextNode(snapshot, '本次使用允许') || findTextNode(snapshot, '始终允许');
+  if (!allow) return false;
+  await device.tap(allow);
+  await sleep(700);
+  return true;
 }
 
 function normalizeScreen(value) {

@@ -1,4 +1,5 @@
 import { openDingtalkFirstConversation, dingtalkNodes } from './dingtalk-call-entry.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 export const DINGTALK_QUICK_MEETING_WORKFLOW_ID = 'meeting:dingtalk:quick-meeting';
 export const DINGTALK_JOIN_MEETING_WORKFLOW_ID = 'meeting:dingtalk:join-meeting';
@@ -97,8 +98,9 @@ async function executeDingtalkMeeting({
     if (has(s, '结束') || has(s, '离开') || has(s, '会议信息')) throw new Error('钉钉已有会议，请先手动结束');
     if (calling) {
       await openDingtalkFirstConversation({ device, sleep });
-      entered = true;
+      await startCaptureBeforeAction(startCapture, sleep);
       await device.tapText('视频会议');
+      entered = true;
       onStep(2, '等待对方接听钉钉视频通话');
     } else {
       if (!has(s, '发起会议')) {
@@ -121,9 +123,11 @@ async function executeDingtalkMeeting({
       s = await snapshot();
       if (!has(s, '进入会议')) throw new Error('未找到钉钉会议准备页');
       onStep(2, '进入会议并等待连接');
-      // Mark before the tap so cancellation during entry still attempts normal cleanup.
-      entered = true;
+      // Mark immediately after the entry tap so cancellation during the
+      // meeting still attempts normal cleanup.
+      await startCaptureBeforeAction(startCapture, sleep);
       await device.tapText('进入会议');
+      entered = true;
     }
     let ready = false;
     for (let i = 0; i < 15; i++) {
@@ -185,7 +189,6 @@ async function executeDingtalkMeeting({
       if (!shared) throw new Error('未确认屏幕共享成功，请检查系统共享授权提示');
     }
     onStep(4, '会议状态已就绪，开始计时和采集');
-    await startCapture?.();
     const started = now();
     while (now() - started < durationMs) {
       await sleep(Math.min(5000, durationMs - (now() - started)));

@@ -34,39 +34,55 @@ test('workflow catalog contains parameterized meeting variants and omits hidden 
     { id: 'meetime', name: '畅连', installed: true },
     { id: 'welink', name: 'WeLink', installed: true },
   ]).filter((workflow) => workflow.categoryId === 'voip');
-  assert.equal(voipWorkflows.length, 12);
+  const repeatParams = [
+    { id: 'repeatCount', label: '重复次数', type: 'number', defaultValue: 1, min: 1, max: 20 },
+    { id: 'repeatInterval', label: '重复间隔', type: 'duration', defaultValue: 5, defaultUnit: '秒', min: 1, units: ['秒', '分钟', '小时'] },
+  ];
+  assert.equal(voipWorkflows.length, 11);
   for (const workflow of voipWorkflows) {
-    assert.deepEqual(workflow.params, [
-      {
-        id: 'duration',
-        label: '通话时长',
-        type: 'duration',
-        defaultValue: 30,
-        defaultUnit: '秒',
-        min: 1,
-        units: ['秒', '分钟', '小时'],
-      },
-      ...(['voip:dingtalk:video-call', 'voip:wecom:video-call', 'voip:welink:audio-call', 'voip:welink:video-call'].includes(workflow.id) ? [
-        { id: 'camera', label: '开启摄像头', type: 'boolean', defaultValue: false },
-        { id: 'shareScreen', label: '共享屏幕', type: 'boolean', defaultValue: false },
-      ] : []),
-    ]);
-    assert.match(workflow.commandTemplate, /第一个(?:联系人|人)/);
+    if (workflow.appId === 'meetime') {
+      assert.deepEqual(workflow.params, [
+        { id: 'phoneNumber', label: '电话号码', type: 'text', defaultValue: '', required: true },
+        { id: 'duration', label: '通话时长', type: 'duration', defaultValue: 30, defaultUnit: '秒', min: 1, units: ['秒', '分钟', '小时'] },
+        { id: 'video', label: '视频通话', type: 'boolean', defaultValue: false },
+        ...repeatParams,
+      ]);
+      assert.match(workflow.commandTemplate, /\{phoneNumber\}/);
+    } else {
+      assert.deepEqual(workflow.params, [
+        {
+          id: 'duration',
+          label: '通话时长',
+          type: 'duration',
+          defaultValue: 30,
+          defaultUnit: '秒',
+          min: 1,
+          units: ['秒', '分钟', '小时'],
+        },
+        ...(['voip:dingtalk:video-call', 'voip:wecom:video-call', 'voip:welink:audio-call', 'voip:welink:video-call'].includes(workflow.id) ? [
+          { id: 'camera', label: '开启摄像头', type: 'boolean', defaultValue: false },
+          { id: 'shareScreen', label: '共享屏幕', type: 'boolean', defaultValue: false },
+        ] : []),
+        ...repeatParams,
+      ]);
+      assert.match(workflow.commandTemplate, /第一个(?:联系人|人)/);
+    }
     assert.match(workflow.commandTemplate, /\{duration\}/);
     assert.doesNotMatch(workflow.commandTemplate, /\{contact\}/);
   }
   for (const appId of ['wechat', 'qq', 'dingtalk', 'wecom', 'meetime', 'welink']) {
     const appWorkflows = voipWorkflows.filter((workflow) => workflow.appId === appId);
-    assert.deepEqual(
-      appWorkflows.map((workflow) => [workflow.functionId, workflow.featureName]),
-      [
-        ['audio-call', '音频通话'],
-        ['video-call', '视频通话'],
-      ],
-    );
-    assert.match(appWorkflows[0].commandTemplate, /音频通话/);
-    assert.match(appWorkflows[1].commandTemplate, /视频通话/);
+    const expected = appId === 'meetime'
+      ? [['audio-call', '音频通话']]
+      : [['audio-call', '音频通话'], ['video-call', '视频通话']];
+    assert.deepEqual(appWorkflows.map((workflow) => [workflow.functionId, workflow.featureName]), expected);
+    if (appId !== 'meetime') assert.match(appWorkflows[0].commandTemplate, /音频通话/);
+    if (appId !== 'meetime') assert.match(appWorkflows[1].commandTemplate, /视频通话/);
   }
+  assert.deepEqual(
+    voipWorkflows.filter((workflow) => workflow.appId === 'welink').map((workflow) => workflow.status),
+    ['verified', 'verified'],
+  );
 
   const douyin = workflows.find((workflow) => workflow.id === 'short-video:douyin:short-video-feed');
   assert.equal(douyin.status, 'verified');
@@ -318,7 +334,7 @@ test('workflow catalog contains parameterized meeting variants and omits hidden 
   );
   assert.deepEqual(
     quickMeeting.params.map((parameter) => parameter.id),
-    ['duration', 'camera', 'shareScreen'],
+    ['duration', 'camera', 'shareScreen', 'repeatCount', 'repeatInterval'],
   );
 
   const joinMeeting = workflows.find(
@@ -326,7 +342,7 @@ test('workflow catalog contains parameterized meeting variants and omits hidden 
   );
   assert.deepEqual(
     joinMeeting.params.map((parameter) => parameter.id),
-    ['meetingId', 'duration', 'meetingPassword', 'camera', 'shareScreen'],
+    ['meetingId', 'duration', 'meetingPassword', 'camera', 'shareScreen', 'repeatCount', 'repeatInterval'],
   );
   assert.equal(joinMeeting.params.find((parameter) => parameter.id === 'meetingPassword').sensitive, true);
   assert.equal(joinMeeting.params.find((parameter) => parameter.id === 'meetingPassword').required, false);

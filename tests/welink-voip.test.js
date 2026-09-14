@@ -21,6 +21,7 @@ test('WeLink requires a real meeting surface, not only the page root', () => {
   assert.equal(isConnected(snap([node('meeting_page_root')])), false);
   assert.equal(isConnected(snap([node('meeting_page_root'), node('HWMVideoItem')])), true);
   assert.equal(isConnected(snap([node('meeting_page_root'), node('confTimeSection-ElapsedTime', '00:12')])), true);
+  assert.equal(isConnected(snap([node('meeting_page_root'), node('HWMScreenShareMask')])), true);
 });
 
 test('WeLink camera state follows the Harmony control suffix', () => {
@@ -29,9 +30,10 @@ test('WeLink camera state follows the Harmony control suffix', () => {
   assert.equal(getCameraState(snap([])), null);
 });
 
-test('WeLink sharing requires an active status label', () => {
+test('WeLink sharing requires an active label or the Harmony sharing mask', () => {
   assert.equal(isScreenSharing(snap([node('meeting_page_root'), node('', '共享屏幕')])), false);
   assert.equal(isScreenSharing(snap([node('meeting_page_root'), node('', '停止共享')])), true);
+  assert.equal(isScreenSharing(snap([node('meeting_page_root'), node('HWMScreenShareMask')])), true);
 });
 
 test('WeLink controls are considered visible only with the hangup and timer nodes', () => {

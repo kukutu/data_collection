@@ -77,6 +77,45 @@ for (const [callType, workflowId] of [
   });
 }
 
+test('WeChat VoIP expands a collapsed video surface before hanging up', async () => {
+  const device = new FakeWechatVoipDevice();
+  const originalGetUiTextSnapshot = device.getUiTextSnapshot.bind(device);
+  let callSnapshotReads = 0;
+  device.getUiTextSnapshot = async () => {
+    const current = await originalGetUiTextSnapshot();
+    if (device.state === 'call' && ++callSnapshotReads >= 2) {
+      return snapshot(
+        ['切换画面'],
+        node({ type: 'Button', text: '切换画面', bounds: '[755,252][1256,1110]' }),
+      );
+    }
+    return current;
+  };
+
+  const result = await executeWechatVoipCall({
+    device,
+    app: APP,
+    workflowId: WECHAT_VIDEO_CALL_WORKFLOW_ID,
+    callType: 'video',
+    parameters: { duration: { amount: 1, unit: '秒' } },
+    sleep: async () => {},
+    timings: {
+      afterLaunchMs: 0,
+      afterConversationMs: 0,
+      afterDetailsMs: 0,
+      afterProfileMs: 0,
+      afterTypeSheetMs: 0,
+      callObservationMs: 0,
+      controlsSettleMs: 0,
+      hangupSettleMs: 0,
+    },
+  });
+
+  assert.equal(result.validationChecks.every((check) => check.status === 'passed'), true);
+  assert.equal(device.hangupCount, 1);
+  assert.equal(device.state, 'profile');
+});
+
 test('WeChat VoIP workflow parameters override the generic unsupported parser result', () => {
   assert.deepEqual(
     applyWorkflowParameters(

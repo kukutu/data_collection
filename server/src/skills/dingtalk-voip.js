@@ -1,4 +1,5 @@
 import { dingtalkNodes, tapDingtalkNode, openDingtalkFirstConversation } from './dingtalk-call-entry.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 import { executeDingtalkVideoCall } from './dingtalk-meeting.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -45,8 +46,9 @@ export async function executeDingtalkVoipCall(options) {
     const s = await snapshot();
     const entry = dingtalkNodes(s).find(n => n.text === '语音通话');
     if (!entry) throw new Error('未找到语音通话入口');
-    initiated = true;
+    await startCaptureBeforeAction(startCapture, sleep);
     await tapDingtalkNode(device, entry);
+    initiated = true;
     onStep(2, '等待对方接听钉钉语音通话');
     let connected = false;
     for (let i = 0; i < 30; i++) {
@@ -58,7 +60,6 @@ export async function executeDingtalkVoipCall(options) {
     }
     if (!connected) throw new Error('等待接听超时');
     onStep(3, '钉钉语音已接通，开始计时和采集');
-    await startCapture?.();
     const started = now();
     while (now() - started < effectiveDurationMs) {
       await sleep(Math.min(5000, effectiveDurationMs - (now() - started)));

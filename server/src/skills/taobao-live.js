@@ -18,6 +18,8 @@ const DEFAULT_TIMINGS = Object.freeze({
   motionMs: 1500,
   switchMs: 3000,
   switchBufferMs: 2500,
+  couponPollMs: 3000,
+  couponSettleMs: 800,
 });
 
 const VIDEO_TAB_IDS = ['tab_video'];
@@ -37,6 +39,15 @@ const LIVE_UNAVAILABLE_EVIDENCE = [
   /暂未开播/,
   /直播间已关闭/,
 ];
+const COUPON_CONTEXT_EVIDENCE = [
+  /优惠券/,
+  /领券中心/,
+  /直播券/,
+  /店铺券/,
+  /无门槛/,
+  /满\s*\d+(?:\.\d+)?\s*减\s*\d+(?:\.\d+)?/,
+];
+const COUPON_CLAIM_EVIDENCE = /^(?:立即|马上|一键|全部|点击)?领取(?:优惠券)?(?:\s*[>›»])?$/;
 
 export async function executeTaobaoLiveBrowse({
   device,
@@ -59,7 +70,7 @@ export async function executeTaobaoLiveBrowse({
   const effectiveDurationMs = normalizeDurationMs(durationMs);
   const effectiveSwitchIntervalMs = normalizeSwitchIntervalMs(switchIntervalMs);
   const validationChecks = [];
-  const totalSteps = 6 + (startCapture ? 1 : 0);
+  const totalSteps = 7 + (startCapture ? 1 : 0);
   let replayStepIndex = 0;
   let screen = DEFAULT_SCREEN;
 
@@ -110,7 +121,7 @@ export async function executeTaobaoLiveBrowse({
     '已识别顶部视频、直播和短剧频道',
   );
 
-  const roomSnapshot = await runStage(
+  const openedSnapshot = await runStage(
     'live_room_opened',
     '点击淘宝视频页顶部直播频道',
     () =>
@@ -125,6 +136,37 @@ export async function executeTaobaoLiveBrowse({
       }),
     describeTaobaoLiveRoom,
   );
+
+  const couponResult = await runStage(
+    'coupon_processed',
+    '检查并领取淘宝直播优惠券',
+    async () => {
+      const result = await claimVisibleTaobaoCoupons({
+        device,
+        screen,
+        snapshot: openedSnapshot,
+        delays,
+        sleep,
+      });
+      if (!isTaobaoLiveRoom(result.snapshot)) {
+        result.snapshot = await waitForSnapshot({
+          device,
+          predicate: isTaobaoLiveRoom,
+          timeoutMs: 5000,
+          pollMs: 600,
+          sleep,
+          now,
+          message: '领取淘宝直播优惠券后未恢复直播间',
+        });
+      }
+      return result;
+    },
+    (result) =>
+      result.claimedCount > 0
+        ? `已领取 ${result.claimedCount} 张优惠券`
+        : '当前未出现优惠券弹窗',
+  );
+  const roomSnapshot = couponResult.snapshot;
 
   await runStage(
     'live_room_verified',
@@ -176,9 +218,10 @@ export async function executeTaobaoLiveBrowse({
         sleep,
         now,
         random,
+        initialCouponClaimCount: couponResult.claimedCount,
       }),
     (result) =>
-      `浏览 ${result.observedMs}ms，成功上滑切换 ${result.switchCount} 次`,
+      `浏览 ${result.observedMs}ms，成功上滑切换 ${result.switchCount} 次，领取优惠券 ${result.couponClaimCount} 张`,
   );
 
   return {
@@ -189,6 +232,7 @@ export async function executeTaobaoLiveBrowse({
     replayStepIndex,
     replaySource: TAOBAO_LIVE_VALIDATION_MODE,
     switchCount: browseResult.switchCount,
+    couponClaimCount: browseResult.couponClaimCount,
     browseResult,
   };
 }
@@ -243,7 +287,7 @@ async function openTaobaoLiveRoom({
   let snapshot = await getSnapshot(device).catch(() => videoSnapshot);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (isTaobaoLiveRoom(snapshot)) {
+    if (isTaobaoLiveRoom(snapshot) || findTaobaoCouponClaimPoint(snapshot, screen)) {
       await assertTaobaoForeground(device, app);
       return snapshot;
     }
@@ -266,7 +310,8 @@ async function openTaobaoLiveRoom({
 
   snapshot = await waitForSnapshot({
     device,
-    predicate: isTaobaoLiveRoom,
+    predicate: (value) =>
+      isTaobaoLiveRoom(value) || Boolean(findTaobaoCouponClaimPoint(value, screen)),
     timeoutMs: 4000,
     pollMs: 600,
     sleep,
@@ -288,19 +333,37 @@ async function browseTaobaoLive({
   sleep,
   now,
   random,
+  initialCouponClaimCount = 0,
 }) {
   const startedAt = now();
   const deadline = startedAt + durationMs;
   let snapshot = initialSnapshot;
   let switchCount = 0;
   let retryCount = 0;
+  let couponClaimCount = initialCouponClaimCount;
   let nextSwitchAt = startedAt + nextSwitchWaitMs(switchIntervalMs, random);
+  let nextCouponPollAt = startedAt + Number(delays.couponPollMs || 3000);
 
   while (now() < deadline) {
-    const wakeAt = Math.min(deadline, nextSwitchAt);
+    const wakeAt = Math.min(deadline, nextSwitchAt, nextCouponPollAt);
     const waitMs = Math.max(0, wakeAt - now());
     if (waitMs > 0) await sleep(waitMs);
     if (now() >= deadline) break;
+
+    if (now() >= nextCouponPollAt) {
+      await assertTaobaoForeground(device, app);
+      const couponResult = await claimVisibleTaobaoCoupons({
+        device,
+        screen,
+        snapshot: await getSnapshot(device),
+        delays,
+        sleep,
+      });
+      snapshot = couponResult.snapshot;
+      couponClaimCount += couponResult.claimedCount;
+      nextCouponPollAt = now() + Number(delays.couponPollMs || 3000);
+      if (now() < nextSwitchAt) continue;
+    }
 
     const remainingMs = deadline - now();
     if (remainingMs < minimumSwitchBudgetMs(delays)) {
@@ -319,12 +382,21 @@ async function browseTaobaoLive({
     });
     snapshot = switched.snapshot;
     retryCount += switched.retryCount;
+    couponClaimCount += switched.couponClaimCount;
     switchCount += 1;
     nextSwitchAt = now() + nextSwitchWaitMs(switchIntervalMs, random);
   }
 
   await assertTaobaoForeground(device, app);
-  const finalSnapshot = await getSnapshot(device).catch(() => snapshot);
+  const finalCouponResult = await claimVisibleTaobaoCoupons({
+    device,
+    screen,
+    snapshot: await getSnapshot(device).catch(() => snapshot),
+    delays,
+    sleep,
+  });
+  const finalSnapshot = finalCouponResult.snapshot;
+  couponClaimCount += finalCouponResult.claimedCount;
   if (!isTaobaoLiveRoom(finalSnapshot)) {
     throw new Error('淘宝直播浏览结束时已离开真实直播间');
   }
@@ -333,6 +405,7 @@ async function browseTaobaoLive({
     observedMs: Math.max(0, now() - startedAt),
     switchCount,
     retryCount,
+    couponClaimCount,
     finalIdentity: extractTaobaoLiveRoomIdentity(finalSnapshot),
   };
 }
@@ -345,7 +418,15 @@ async function switchTaobaoLiveRoom({
   delays,
   sleep,
 }) {
-  const beforeIdentity = extractTaobaoLiveRoomIdentity(currentSnapshot);
+  const beforeCouponResult = await claimVisibleTaobaoCoupons({
+    device,
+    screen,
+    snapshot: currentSnapshot,
+    delays,
+    sleep,
+  });
+  const beforeIdentity = extractTaobaoLiveRoomIdentity(beforeCouponResult.snapshot);
+  let couponClaimCount = beforeCouponResult.claimedCount;
   const gestures = [
     {
       x1: Math.round(screen.width * 0.28),
@@ -366,7 +447,15 @@ async function switchTaobaoLiveRoom({
   for (const [index, gesture] of gestures.entries()) {
     await device.swipe(gesture);
     await sleep(delays.switchMs);
-    const snapshot = await getSnapshot(device);
+    const couponResult = await claimVisibleTaobaoCoupons({
+      device,
+      screen,
+      snapshot: await getSnapshot(device),
+      delays,
+      sleep,
+    });
+    const snapshot = couponResult.snapshot;
+    couponClaimCount += couponResult.claimedCount;
     const nextIdentity = extractTaobaoLiveRoomIdentity(snapshot);
     if (
       isTaobaoLiveRoom(snapshot) &&
@@ -378,6 +467,7 @@ async function switchTaobaoLiveRoom({
       return {
         snapshot,
         retryCount: index,
+        couponClaimCount,
         fromIdentity: beforeIdentity,
         toIdentity: nextIdentity,
       };
@@ -385,6 +475,82 @@ async function switchTaobaoLiveRoom({
   }
 
   throw new Error('淘宝直播完成上滑，但主播未变化，未计为成功切换');
+}
+
+async function claimVisibleTaobaoCoupons({
+  device,
+  screen,
+  snapshot,
+  delays,
+  sleep,
+}) {
+  let current = snapshot || (await getSnapshot(device));
+  let claimedCount = 0;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const claimPoint = findTaobaoCouponClaimPoint(current, screen);
+    if (!claimPoint) break;
+    await device.tap(claimPoint);
+    claimedCount += 1;
+    await sleep(Number(delays.couponSettleMs || 800));
+    current = await getSnapshot(device);
+  }
+
+  return { snapshot: current, claimedCount };
+}
+
+export function findTaobaoCouponClaimPoint(snapshot, screen = null) {
+  const values = snapshotValues(snapshot);
+  const hasCouponContext = COUPON_CONTEXT_EVIDENCE.some((matcher) =>
+    values.some((value) => matcher.test(value)),
+  );
+  if (!hasCouponContext) return null;
+
+  const size = normalizeScreen(screen || inferLayoutScreen(snapshot?.layout));
+  const candidates = [];
+  let order = 0;
+
+  const visit = (raw, clickableAncestors = []) => {
+    if (!raw || typeof raw !== 'object') return;
+    const attributes = raw.attributes || raw.attrs || raw;
+    const bounds = parseBounds(attributes.bounds);
+    const currentAncestors =
+      bounds && String(attributes.clickable) === 'true'
+        ? [bounds, ...clickableAncestors]
+        : clickableAncestors;
+    const texts = [
+      attributes.text,
+      attributes.originalText,
+      attributes.description,
+      attributes.hint,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+
+    if (bounds && texts.some((value) => COUPON_CLAIM_EVIDENCE.test(value))) {
+      const targetBounds = currentAncestors[0] || bounds;
+      const centerY = (targetBounds.y1 + targetBounds.y2) / 2;
+      if (centerY >= size.height * 0.15 && centerY <= size.height * 0.92) {
+        candidates.push({
+          x: Math.round((targetBounds.x1 + targetBounds.x2) / 2),
+          y: Math.round(centerY),
+          zIndex: Number(attributes.zIndex || 0),
+          order: order += 1,
+        });
+      }
+    }
+
+    for (const child of Array.isArray(raw.children) ? raw.children : []) {
+      visit(child, currentAncestors);
+    }
+  };
+
+  visit(snapshot?.layout);
+  candidates.sort((left, right) =>
+    right.zIndex - left.zIndex || right.order - left.order,
+  );
+  const candidate = candidates[0];
+  return candidate ? { x: candidate.x, y: candidate.y } : null;
 }
 
 export function isTaobaoVideoPage(snapshot) {

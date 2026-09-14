@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import {
   executeTaobaoLiveBrowse,
   extractTaobaoLiveRoomIdentity,
+  findTaobaoCouponClaimPoint,
   isTaobaoLiveRoom,
   isTaobaoVideoPage,
   TAOBAO_LIVE_VALIDATION_MODE,
@@ -52,6 +53,36 @@ test('Taobao enters video from the bottom, selects live at the top, and verifies
     roomA: readLayout('taobao-live-feed.json'),
     roomB: readLayout('taobao-live-switched-2.json'),
   };
+  snapshots.coupon = {
+    layout: {
+      attributes: { bounds: '[0,0][1280,2832]' },
+      children: [
+        snapshots.roomA.layout,
+        {
+          attributes: {
+            type: 'Text',
+            text: '直播间优惠券',
+            originalText: '直播间优惠券',
+            bounds: '[300,1200][980,1320]',
+            clickable: 'false',
+            zIndex: '20',
+          },
+          children: [],
+        },
+        {
+          attributes: {
+            type: 'Button',
+            text: '立即领取',
+            originalText: '立即领取',
+            bounds: '[760,1600][1100,1740]',
+            clickable: 'true',
+            zIndex: '21',
+          },
+          children: [],
+        },
+      ],
+    },
+  };
   let state = 'stopped';
   let videoSnapshotReads = 0;
   let clock = 0;
@@ -98,7 +129,8 @@ test('Taobao enters video from the bottom, selects live at the top, and verifies
     async tap(value) {
       calls.push(['tap', state, value.x, value.y]);
       if (state === 'home') state = 'video';
-      else if (state === 'video') state = 'roomA';
+      else if (state === 'video') state = 'coupon';
+      else if (state === 'coupon') state = 'roomA';
     },
     async swipe(value) {
       calls.push([
@@ -142,6 +174,7 @@ test('Taobao enters video from the bottom, selects live at the top, and verifies
 
   assert.equal(result.validationMode, TAOBAO_LIVE_VALIDATION_MODE);
   assert.equal(result.switchCount, 1);
+  assert.equal(result.couponClaimCount, 1);
   assert.equal(result.validationChecks.every((check) => check.status === 'passed'), true);
   assert.equal(captureStarted, true);
   assert.equal(state, 'roomB');
@@ -149,6 +182,11 @@ test('Taobao enters video from the bottom, selects live at the top, and verifies
   const taps = calls.filter((call) => call[0] === 'tap');
   assert.deepEqual(taps[0], ['tap', 'home', 384, 2699]);
   assert.deepEqual(taps[1], ['tap', 'video', 619, 217]);
+  assert.deepEqual(taps[2], ['tap', 'coupon', 930, 1670]);
+  assert.deepEqual(
+    findTaobaoCouponClaimPoint(snapshots.coupon, screen),
+    { x: 930, y: 1670 },
+  );
 
   const swipe = calls.find((call) => call[0] === 'swipe');
   assert.deepEqual(swipe, [

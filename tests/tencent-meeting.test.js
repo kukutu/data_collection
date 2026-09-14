@@ -133,7 +133,7 @@ test('executes quick meeting parameters, waits the requested duration, and stric
   assert.equal(device.currentState(), 'home');
   assert.equal(device.recoveryCancelled(), true);
   assert.equal(device.permissionGranted(), true);
-  assert.equal(captureState, 'meeting');
+  assert.equal(captureState, 'setup');
   assert.ok(
     result.validationChecks.some((check) => check.id === 'capture_started'),
   );
@@ -824,6 +824,7 @@ function createJoinMeetingDevice({ rememberedSharePermission = false } = {}) {
   let state = 'idle';
   let camera = false;
   let meetingId = '';
+  let keyboardVisible = false;
   let shareConfirmation = null;
   let confirmedLeave = false;
   let selectedEndMeeting = false;
@@ -858,6 +859,7 @@ function createJoinMeetingDevice({ rememberedSharePermission = false } = {}) {
       if (state === 'join-setup') {
         return {
           text: `加入会议\n会议号\n${meetingId ? '660 739 282' : '请输入会议号'}\n您的名称\n开启视频`,
+          values: keyboardVisible ? ['+', '-', '=', '/'] : [],
           layout: buildJoinSetupLayout({ cameraEnabled: camera, meetingId }),
         };
       }
@@ -929,9 +931,13 @@ function createJoinMeetingDevice({ rememberedSharePermission = false } = {}) {
       }
     },
     async inputText(text) {
-      if (state === 'join-setup') meetingId = String(text);
+      if (state === 'join-setup') {
+        meetingId = String(text);
+        keyboardVisible = true;
+      }
     },
     async keyevent() {
+      if (state === 'join-setup') keyboardVisible = false;
       if (state === 'share-active') state = 'meeting';
     },
     openShareDialog() {

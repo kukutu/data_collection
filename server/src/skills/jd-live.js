@@ -17,7 +17,7 @@ function texts(s) {
 }
 function target(s, pattern, screen, min, max) {
   for (const a of nodes(s)) {
-    if (![a.text, a.description].some(v => pattern.test(v || ''))) continue;
+    if (![a.text, a.description, a.originalText, a.hint].some(v => pattern.test(v || ''))) continue;
     const b = String(a.bounds).match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
     if (!b) continue;
     const x = (+b[1] + +b[3]) / 2, y = (+b[2] + +b[4]) / 2;
@@ -25,6 +25,43 @@ function target(s, pattern, screen, min, max) {
   }
   return null;
 }
+
+export function findJdLiveCardPoint(s, screen) {
+  const width = Number(screen?.width) || 1280;
+  const height = Number(screen?.height) || 2832;
+  const points = [];
+  for (const a of nodes(s)) {
+    if (String(a.clickable) !== 'true') continue;
+    const match = String(a.bounds || '').match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+    if (!match) continue;
+    const x1 = Number(match[1]);
+    const y1 = Number(match[2]);
+    const x2 = Number(match[3]);
+    const y2 = Number(match[4]);
+    const cardWidth = x2 - x1;
+    const cardHeight = y2 - y1;
+    const centerY = (y1 + y2) / 2;
+    if (
+      cardWidth < width * 0.4 ||
+      cardWidth > width * 0.55 ||
+      cardHeight < height * 0.15 ||
+      cardHeight > height * 0.4 ||
+      centerY < height * 0.25 ||
+      centerY > height * 0.95
+    ) continue;
+    points.push({
+      x: Math.round((x1 + x2) / 2),
+      y: Math.round(y1 + cardHeight * 0.3),
+    });
+  }
+  points.sort((left, right) => left.y - right.y || left.x - right.x);
+  return points.find((point, index) =>
+    points.slice(0, index).every(
+      previous => Math.abs(previous.x - point.x) >= 20 || Math.abs(previous.y - point.y) >= 20,
+    ),
+  ) || null;
+}
+
 export async function executeJdLiveBrowse({ device, app, durationMs = 300000, switchIntervalMs = 180000,
   sleep = ms => new Promise(r => setTimeout(r, ms)), now = Date.now, startCapture, onStep = () => {} }) {
   const duration = Number(durationMs), interval = Number(switchIntervalMs ?? 180000);
@@ -70,7 +107,11 @@ export async function executeJdLiveBrowse({ device, app, durationMs = 300000, sw
   let channel;
   for (let i = 0; i < 2; i++) {
     await foreground();
-    const live = target(await snapshot(), /^直播$/, screen, 0.04, 0.12);
+    let live = null;
+    for (let probe = 0; probe < 8 && !live; probe += 1) {
+      live = target(await snapshot(), /^直播$/, screen, 0.03, 0.20);
+      if (!live) await sleep(700);
+    }
     if (!live) throw new Error('未找到京东顶部直播入口');
     await device.tap(live);
     await sleep(3500);
@@ -79,7 +120,11 @@ export async function executeJdLiveBrowse({ device, app, durationMs = 300000, sw
   }
   report('进入京东真实直播间');
   // Top preview avoids the product-explanation replay cards below it.
-  if (!isJdLiveRoom(channel)) await tap(0.31, 0.177);
+  if (!isJdLiveRoom(channel)) {
+    const liveCard = findJdLiveCardPoint(channel, screen);
+    if (!liveCard) throw new Error('未找到京东直播卡片');
+    await device.tap(liveCard);
+  }
   await poll(isJdLiveRoom, '京东未进入真实直播间');
   checks.push({ id: 'live_room', status: 'passed' });
   report('验证京东直播动态画面');

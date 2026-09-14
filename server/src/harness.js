@@ -5,6 +5,10 @@ import {
   WELINK_AUDIO_CALL_WORKFLOW_ID,
   WELINK_VIDEO_CALL_WORKFLOW_ID,
 } from './skills/welink-voip.js';
+import {
+  executeMeetimeVoipCall,
+  MEETIME_AUDIO_CALL_WORKFLOW_ID,
+} from './skills/meetime-voip.js';
 import { executeJdLiveBrowse } from './skills/jd-live.js';
 import { executeYangshipinLiveBrowse } from './skills/yangshipin-live.js';
 import {
@@ -114,10 +118,12 @@ export class TaskManager {
     workflows = [],
     workflowExecutionProvider = null,
     tencentJoinMeetingExecutor = executeTencentJoinMeeting,
-    tencentQuickMeetingExecutor = executeTencentQuickMeeting,
-    wechatMediaExecutor = executeWechatMediaTransfer,
-    wechatVoipExecutor = executeWechatVoipCall,
-    welinkVoipExecutor = executeWelinkVoipCall,
+      tencentQuickMeetingExecutor = executeTencentQuickMeeting,
+      wechatMediaExecutor = executeWechatMediaTransfer,
+      wechatVoipExecutor = executeWechatVoipCall,
+      qqVoipExecutor = executeQqVoipCall,
+      welinkVoipExecutor = executeWelinkVoipCall,
+    meetimeVoipExecutor = executeMeetimeVoipCall,
     kuaishouLiveExecutor = executeKuaishouLiveBrowse,
     bilibiliLiveExecutor = executeBilibiliLiveBrowse,
     huyaLiveExecutor = executeHuyaLiveBrowse,
@@ -139,7 +145,9 @@ export class TaskManager {
     this.tencentQuickMeetingExecutor = tencentQuickMeetingExecutor;
     this.wechatMediaExecutor = wechatMediaExecutor;
     this.wechatVoipExecutor = wechatVoipExecutor;
+    this.qqVoipExecutor = qqVoipExecutor;
     this.welinkVoipExecutor = welinkVoipExecutor;
+    this.meetimeVoipExecutor = meetimeVoipExecutor;
     this.kuaishouLiveExecutor = kuaishouLiveExecutor;
     this.bilibiliLiveExecutor = bilibiliLiveExecutor;
     this.huyaLiveExecutor = huyaLiveExecutor;
@@ -181,6 +189,11 @@ export class TaskManager {
       startedAt: new Date().toISOString(),
       stopped: false,
       pendingConfirmation: null,
+      captures: [],
+      iterationResults: [],
+      repeatCount: 1,
+      repeatIndex: 0,
+      repeatIntervalMs: 0,
     };
 
     this.tasks.set(task.id, task);
@@ -217,7 +230,13 @@ export class TaskManager {
       error: task.error,
       pendingConfirmation: task.pendingConfirmation,
       capture,
+      captures: task.captures || [],
+      captureCount: task.captures?.length || 0,
       captureError: task.captureError,
+      repeatCount: task.repeatCount || 1,
+      repeatIndex: task.repeatIndex || 0,
+      repeatIntervalMs: task.repeatIntervalMs || 0,
+      iterationResults: task.iterationResults || [],
       sentCount: task.sentCount,
       effectiveDurationMs: task.effectiveDurationMs,
       validationMode: task.validationMode,
@@ -260,6 +279,15 @@ export class TaskManager {
         parameters: task.executionParameters,
       },
     );
+    task.parsed = applyRepeatParameters(task.parsed, {
+      parameters: task.executionParameters,
+      taskText: task.input,
+    });
+    task.repeatCount = task.parsed.repeatCount || 1;
+    task.repeatIntervalMs = task.parsed.repeatIntervalMs || 0;
+    task.repeatIndex = 0;
+    task.captures = [];
+    task.iterationResults = [];
     this.#log(task, `解析结果: ${JSON.stringify(sanitizeParsedTask(task.parsed))}`);
 
     const safety = evaluateSafety(task.parsed, task.input);
@@ -271,7 +299,6 @@ export class TaskManager {
       return;
     }
 
-    let captureSession = null;
     let deviceLock = null;
     let outcome = 'completed';
     let runError = null;
@@ -286,21 +313,12 @@ export class TaskManager {
         );
       }
       this.#assertNotStopped(task);
-      await this.#execute(task);
+      await this.#executeRepeated(task);
     } catch (error) {
       runError = error;
       outcome = task.stopped || error instanceof TaskStoppedError ? 'stopped' : 'failed';
     } finally {
-      captureSession ||= task.captureSession;
-      if (captureSession) {
-        try {
-          task.capture = await this.captureManager.stop(captureSession.id, { reason: outcome });
-          this.#log(task, `采集已完成: ${task.capture.outputDir}`);
-        } catch (error) {
-          task.captureError = error.message;
-          this.#log(task, `采集收尾失败: ${error.message}`);
-        }
-      }
+      await this.#finishCapture(task, outcome);
       if (deviceLock && typeof this.adb.endSession === 'function') {
         try {
           await this.adb.endSession(deviceLock);
@@ -328,6 +346,66 @@ export class TaskManager {
     this.#log(task, '任务完成');
   }
 
+  async #executeRepeated(task) {
+    const repeatCount = Math.max(1, Number(task.repeatCount) || 1);
+
+    for (let index = 0; index < repeatCount; index += 1) {
+      this.#assertNotStopped(task);
+      task.repeatIndex = index + 1;
+      task.captureSession = null;
+      task.validationChecks = [];
+      this.#log(task, `开始第 ${task.repeatIndex}/${repeatCount} 次`);
+
+      let iterationError = null;
+      let iterationOutcome = 'completed';
+      try {
+        await this.#execute(task);
+      } catch (error) {
+        iterationError = error;
+        iterationOutcome =
+          task.stopped || error instanceof TaskStoppedError ? 'stopped' : 'failed';
+      } finally {
+        const capture = await this.#finishCapture(task, iterationOutcome);
+        task.iterationResults.push({
+          index: task.repeatIndex,
+          status: iterationOutcome,
+          validationChecks: task.validationChecks || [],
+          capture,
+        });
+      }
+
+      if (iterationError) throw iterationError;
+      if (index < repeatCount - 1) {
+        this.#log(
+          task,
+          `第 ${task.repeatIndex}/${repeatCount} 次完成，等待 ${task.repeatIntervalMs}ms 后重试`,
+        );
+        await this.#sleep(task.repeatIntervalMs, task);
+      }
+    }
+  }
+
+  async #finishCapture(task, reason = 'completed') {
+    const captureSession = task.captureSession;
+    if (!captureSession || !this.captureManager) return null;
+
+    try {
+      task.capture = await this.captureManager.stop(captureSession.id, { reason });
+      task.captures = [...(task.captures || []), task.capture];
+      this.#log(
+        task,
+        `第 ${task.repeatIndex || 1} 次采集已完成: ${task.capture.outputDir}`,
+      );
+      return task.capture;
+    } catch (error) {
+      task.captureError = error.message;
+      this.#log(task, `采集收尾失败: ${error.message}`);
+      return null;
+    } finally {
+      task.captureSession = null;
+    }
+  }
+
   async #startCapture(task, capture) {
     const app = this.#resolveApp(task.parsed?.appName);
     const deviceStatus = await this.adb.getDeviceStatus();
@@ -337,6 +415,7 @@ export class TaskManager {
       businessName: inferBusinessName(task.parsed),
       packageName: app.packageName,
       bundleName: app.harmonyBundleName,
+      compatibilityHostBundleName: app.harmonyCompatibilityHostBundleName,
       phoneIp: capture.phoneIp,
       interfaceName: capture.interfaceName,
       outputRoot: capture.outputRoot,
@@ -415,10 +494,13 @@ export class TaskManager {
       case 'baidu_netdisk_upload':
         return this.#baiduNetdiskUpload(task);
       case 'wechat_voip_call':
-      case 'qq_voip_call':
         return this.#wechatVoip(task);
+      case 'qq_voip_call':
+        return this.#qqVoip(task);
       case 'welink_voip_call':
         return this.#welinkVoip(task);
+      case 'meetime_voip_call':
+        return this.#meetimeVoip(task);
       case 'dingtalk_voip_call':
       case 'wecom_voip_call':
         return this.#enterpriseVoip(task);
@@ -619,6 +701,36 @@ export class TaskManager {
     task.effectiveDurationMs = result.effectiveDurationMs ?? null;
   }
 
+  async #qqVoip(task) {
+    const app = this.#resolveApp(task.parsed.appName || 'QQ');
+    if (app.id !== 'qq') {
+      throw new Error('qq_voip_call 只能用于 QQ App');
+    }
+    if (task.parsed.targetMode && task.parsed.targetMode !== 'first') {
+      throw new Error('QQ 音视频通话当前只支持消息列表中的第一个会话');
+    }
+
+    const result = await this.qqVoipExecutor({
+      device: this.adb,
+      app,
+      callType: task.parsed.callType,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled
+        ? () => this.#ensureCapture(task)
+        : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (stepIndex, label, totalSteps) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = stepIndex;
+        task.totalSteps = totalSteps;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+  }
+
   async #wechatVoip(task) {
     const app = this.#resolveApp(task.parsed.appName || '微信');
     if (app.id !== 'wechat') {
@@ -628,8 +740,7 @@ export class TaskManager {
       throw new Error('微信音视频通话当前只支持聊天列表中的第一个会话');
     }
 
-    const executor = app.id === 'qq' ? executeQqVoipCall : this.wechatVoipExecutor;
-    const result = await executor({
+    const result = await this.wechatVoipExecutor({
       device: this.adb,
       app,
       workflowId: task.workflowId,
@@ -660,6 +771,30 @@ export class TaskManager {
       callType: task.parsed.callType,
       camera: task.parsed.camera,
       shareScreen: task.parsed.shareScreen,
+      durationMs: task.parsed.durationMs,
+      startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
+      sleep: (ms) => this.#sleep(ms, task),
+      onStep: (index, label, total) => {
+        this.#assertNotStopped(task);
+        task.stepIndex = index;
+        task.totalSteps = total;
+        this.#log(task, label);
+      },
+    });
+    task.validationMode = result.validationMode;
+    task.validationChecks = result.validationChecks || [];
+    task.effectiveDurationMs = result.effectiveDurationMs ?? null;
+  }
+
+  async #meetimeVoip(task) {
+    const app = this.#resolveApp(task.parsed.appName || '畅连');
+    if (app.id !== 'meetime') throw new Error('meetime_voip_call 只适用于畅连 App');
+    const result = await this.meetimeVoipExecutor({
+      device: this.adb,
+      app,
+      phoneNumber: task.parsed.phoneNumber,
+      callType: task.parsed.callType,
+      video: task.parsed.video,
       durationMs: task.parsed.durationMs,
       startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null,
       sleep: (ms) => this.#sleep(ms, task),
@@ -781,7 +916,7 @@ export class TaskManager {
 
   async #baiduNetdiskUpload(task) {
     const app = this.#resolveApp(task.parsed.appName || '百度网盘');
-    const result = await this.baiduNetdiskUploadExecutor({ device: this.adb, app, mediaType: task.parsed.mediaType, sleep: ms => this.#sleep(ms, task), onStep: (i, label, total) => { this.#assertNotStopped(task); task.stepIndex=i; task.totalSteps=total; this.#log(task,label); } });
+    const result = await this.baiduNetdiskUploadExecutor({ device: this.adb, app, mediaType: task.parsed.mediaType, startCapture: task.captureConfig?.enabled ? () => this.#ensureCapture(task) : null, sleep: ms => this.#sleep(ms, task), onStep: (i, label, total) => { this.#assertNotStopped(task); task.stepIndex=i; task.totalSteps=total; this.#log(task,label); } });
     task.validationMode = result.validationMode; task.validationChecks = result.validationChecks || []; task.stepIndex = result.replayStepIndex || task.stepIndex;
   }
 
@@ -1873,12 +2008,14 @@ export function inferBusinessName(parsed = {}) {
     case 'app_store_download':
       return '上传下载';
     case 'baidu_netdisk_download':
+    case 'baidu_netdisk_upload':
       return '上传下载';
     case 'wechat_voip_call':
     case 'qq_voip_call':
     case 'dingtalk_voip_call':
     case 'wecom_voip_call':
     case 'welink_voip_call':
+    case 'meetime_voip_call':
       return 'VoIP';
     case 'tencent_quick_meeting':
     case 'tencent_join_meeting':
@@ -1922,6 +2059,54 @@ function sanitizeParsedTask(parsed) {
       ? { meetingPassword: '[已隐藏]' }
       : {}),
       };
+}
+
+const REPEATABLE_INTENTS = new Set([
+  'wechat_voip_call',
+  'qq_voip_call',
+  'dingtalk_voip_call',
+  'wecom_voip_call',
+  'welink_voip_call',
+  'meetime_voip_call',
+  'tencent_quick_meeting',
+  'tencent_join_meeting',
+  'dingtalk_quick_meeting',
+  'dingtalk_join_meeting',
+  'feishu_quick_meeting',
+  'feishu_join_meeting',
+  'xunlei_upload_media',
+  'xunlei_download',
+  'app_store_download',
+  'baidu_netdisk_download',
+  'baidu_netdisk_upload',
+]);
+
+export function applyRepeatParameters(
+  parsed,
+  { parameters = {}, taskText = '' } = {},
+) {
+  if (!REPEATABLE_INTENTS.has(parsed?.intent)) return parsed;
+
+  const text = String(taskText || '');
+  const countMatch = text.match(/(\d+)\s*次/);
+  const intervalMatch = text.match(
+    /(?:间隔|每隔|等待)\s*(\d+(?:\.\d+)?)\s*(毫秒|秒|分钟|小时|ms|s|min|h)/i,
+  );
+  const requestedCount =
+    parameters.repeatCount ?? parsed?.repeatCount ?? countMatch?.[1] ?? 1;
+  const repeatCount = Math.min(20, positiveInteger(requestedCount, 1));
+  const requestedInterval =
+    parameters.repeatInterval ??
+    parsed?.repeatInterval ??
+    (intervalMatch
+      ? { amount: Number(intervalMatch[1]), unit: intervalMatch[2] }
+      : null);
+
+  return {
+    ...parsed,
+    repeatCount,
+    repeatIntervalMs: durationParameterToMs(requestedInterval, 5000),
+  };
 }
 
 export function applyWorkflowParameters(
@@ -1974,6 +2159,17 @@ export function applyWorkflowParameters(
       durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
       camera: Boolean(parameters.camera ?? parsed?.camera),
       shareScreen: Boolean(parameters.shareScreen ?? parsed?.shareScreen),
+    };
+  }
+  if (workflowId === MEETIME_AUDIO_CALL_WORKFLOW_ID) {
+    return {
+      ...parsed,
+      intent: 'meetime_voip_call',
+      appName: '畅连',
+      phoneNumber: String(parameters.phoneNumber ?? parsed?.phoneNumber ?? '').trim(),
+      callType: Boolean(parameters.video ?? parsed?.video) ? 'video' : 'audio',
+      video: Boolean(parameters.video ?? parsed?.video),
+      durationMs: durationParameterToMs(parameters.duration, parsed?.durationMs ?? 30000),
     };
   }
   if (['voip:dingtalk:audio-call', 'voip:dingtalk:video-call', 'voip:wecom:audio-call', 'voip:wecom:video-call'].includes(workflowId)) {

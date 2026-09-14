@@ -3,8 +3,6 @@ import { config } from '../config.js';
 const DEFAULT_SCREEN = { width: config.screen.defaultWidth, height: config.screen.defaultHeight };
 const DEFAULT_DURATION_MS = 5 * 60 * 1000;
 const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
-const XHS_RED_CHANNEL_EVIDENCE = [/RED/, /\d+:\d{2}/];
-const XHS_VIDEO_EVIDENCE = [/说点什么/, /关注/];
 const XIGUA_FEED_EVIDENCE = [/精选/, /关注/, /分享/];
 const TOUTIAO_VIDEO_FEED_EVIDENCE = [/精选/, /关注/, /分享/, /视频/];
 
@@ -39,9 +37,9 @@ export function buildShortVideoPlan({ app, durationMs = DEFAULT_DURATION_MS, scr
     }
 
     if (elapsed < safeDuration) {
-      if (app.id === 'bilibili') {
+      if (app.id === 'bilibili' || app.id === 'xiaohongshu') {
         steps.push({ type: 'assert_foreground_package', packageName: app.packageName,
-          label: '切换前确认仍在 B站' });
+          label: app.id === 'bilibili' ? '切换前确认仍在 B站' : '切换前确认仍在小红书' });
       }
       steps.push({
         type: 'swipe',
@@ -111,85 +109,28 @@ function buildEntrySteps({ app, size, x, startY, endY }) {
   }
 
   if (app.id === 'xiaohongshu') {
-    const topRegion = {
-      minX: 0,
-      maxX: size.width,
-      minY: 0,
-      maxY: Math.round(size.height * 0.18),
-    };
-
-    steps.push(
-      { type: 'force_stop', packageName: app.packageName, label: '重启小红书以回到稳定首页' },
-      { type: 'launch_app', packageName: app.packageName, label: `打开${app.name}` },
-      { type: 'wait', ms: 5000, label: '等待小红书首页加载' },
-      { type: 'assert_no_sensitive_prompt', label: '检查协议和权限弹窗' },
+    return [
       {
-        type: 'tap_text',
-        texts: ['稍后', '取消', '暂不', '跳过', '我知道了'],
-        optional: true,
-        partial: true,
-        label: '关闭小红书非必要提示',
+        type: 'manual_confirm',
+        label: '等待用户进入小红书视频',
+        message: '请手动点入小红书可上下切换的视频页，然后点击“我已进入视频，继续”。',
+        confirmLabel: '我已进入视频，继续',
       },
-      {
-        type: 'tap_text_region',
-        texts: ['发现'],
-        region: topRegion,
-        label: '点击小红书首页发现频道',
-      },
-      {
-        type: 'tap',
-        x: Math.round(size.width * 0.5),
-        y: Math.round(size.height * 0.075),
-        label: '兜底点击小红书首页发现频道',
-      },
-      { type: 'wait', ms: 1200, label: '等待小红书发现频道稳定' },
-      {
-        type: 'tap_text_region',
-        texts: ['RED'],
-        region: topRegion,
-        label: '点击小红书顶部 RED 视频频道',
-      },
-      {
-        type: 'tap',
-        x: Math.round(size.width * 0.214),
-        y: Math.round(size.height * 0.125),
-        label: '兜底点击小红书顶部 RED 视频频道',
-      },
-      { type: 'wait', ms: 5000, label: '等待小红书 RED 视频频道加载' },
-      {
-        type: 'assert_ui_text',
-        all: XHS_RED_CHANNEL_EVIDENCE,
-        label: '确认小红书 RED 视频频道已加载',
-        message: '小红书 RED 频道未出现视频时长和频道标识，停止以避免误点普通笔记',
-      },
-      {
-        type: 'tap',
-        x: Math.round(size.width * 0.19),
-        y: Math.round(size.height * 0.25),
-        label: '点击小红书首张视频卡片',
-      },
-      { type: 'wait', ms: 6000, label: '等待小红书视频详情页稳定' },
       {
         type: 'assert_foreground_package',
         packageName: app.packageName,
-        label: `确认仍在${app.name}`,
-      },
-      {
-        type: 'assert_ui_text',
-        all: XHS_VIDEO_EVIDENCE,
-        label: '确认小红书视频详情页文本证据',
-        message: '小红书未出现视频作者关注入口和评论输入框，不能判定为视频详情页',
+        label: '确认当前前台为小红书',
+        message: '当前不在小红书，请点入视频页后重新执行。',
       },
       {
         type: 'assert_screen_changes',
         intervalMs: 1200,
         minDiffRatio: 0.0005,
-        label: '确认小红书视频画面在播放',
-        message: '小红书视频画面变化不足，不能判定为视频播放内容',
+        label: '确认小红书视频画面正在变化',
+        message: '未检测到小红书播放画面变化，请确认视频已开始播放。',
       },
       { type: 'start_capture', label: '开始采集小红书视频内容' },
-    );
-    return steps;
+    ];
   }
 
   if (app.id === 'douyin') {

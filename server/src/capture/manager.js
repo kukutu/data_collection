@@ -57,6 +57,7 @@ export class CaptureManager {
     businessName,
     packageName,
     bundleName,
+    compatibilityHostBundleName = '',
     phoneIp,
     interfaceName = config.capture.interfaceName,
     outputRoot,
@@ -102,6 +103,7 @@ export class CaptureManager {
       businessName,
       packageName,
       bundleName,
+      compatibilityHostBundleName,
       matchName: transport === 'hdc' ? bundleName || packageName : packageName,
       phoneIp,
       transport,
@@ -133,12 +135,19 @@ export class CaptureManager {
       finalizePromise: null,
       tsharkStopped: false,
       portLoggerStopped: false,
+      captureStartedAt: null,
+      captureStoppedAt: null,
     };
 
     this.sessions.set(id, session);
     this.activeSessionId = id;
 
     try {
+      // Launch all capture components before waiting on any one of them. This
+      // keeps the first packet, port sample, and video frame in one interval.
+      session.captureStartedAt = new Date().toISOString();
+      const startupTasks = [];
+
       session.tsharkProc = this.startCapture({
         tshark: this.tshark,
         interfaceRef: session.interfaceRef,
@@ -146,7 +155,7 @@ export class CaptureManager {
         hostIp: phoneIp,
       });
       attachProcessErrors(session, session.tsharkProc, 'Wireshark');
-      await waitForProcessStart(session.tsharkProc);
+      startupTasks.push(waitForProcessStart(session.tsharkProc));
 
       if (recordPortMapping) {
         session.portLoggerProc = this.startLogger({
@@ -154,23 +163,24 @@ export class CaptureManager {
           serial,
           toolPath: this.toolPath(transport),
           packageName: session.matchName,
+          fallbackPackageName: session.compatibilityHostBundleName,
           logFile: session.mappingRemoteFile,
           intervalSec: this.portMappingIntervalSec,
         });
         attachProcessErrors(session, session.portLoggerProc, '端口映射');
-        await waitForProcessStart(session.portLoggerProc);
+        startupTasks.push(waitForProcessStart(session.portLoggerProc));
       }
 
       if (recordScreen) {
         if (transport === 'hdc') {
+          let systemRecorderPromise;
           try {
-            session.screenRecorder = await this.createSystemScreenRecorder({
+            systemRecorderPromise = this.createSystemScreenRecorder({
               hdcPath: this.hdcPath,
               serial,
               outputFile: session.screenRecordingFile,
               fileName: `capture_${formatTimestamp(new Date())}_${id.slice(0, 8)}.mp4`,
             });
-            session.screenRecordingMode = 'harmony_system';
           } catch (error) {
             session.diagnostics.push(`鸿蒙系统录屏启动失败，使用截图回退: ${error.message}`);
             session.screenRecorder = this.createFrameRecorder({
@@ -178,7 +188,21 @@ export class CaptureManager {
               outputFile: session.screenRecordingFile,
             });
             session.screenRecordingMode = 'screenshot_fallback';
+            systemRecorderPromise = Promise.resolve(session.screenRecorder);
           }
+          startupTasks.push(Promise.resolve(systemRecorderPromise)
+            .then((recorder) => {
+              if (!session.screenRecorder) session.screenRecorder = recorder;
+              if (session.screenRecordingMode === 'pending') session.screenRecordingMode = 'harmony_system';
+            })
+            .catch((error) => {
+              session.diagnostics.push(`Harmony system recorder failed: ${error.message}`);
+              session.screenRecorder = this.createFrameRecorder({
+                outputDir,
+                outputFile: session.screenRecordingFile,
+              });
+              session.screenRecordingMode = 'screenshot_fallback';
+            }));
         } else {
           session.screenRecorder = this.createFrameRecorder({
             outputDir,
@@ -188,6 +212,7 @@ export class CaptureManager {
         }
       }
 
+      await Promise.all(startupTasks);
       session.status = 'capturing';
       return this.snapshot(id);
     } catch (error) {
@@ -242,23 +267,29 @@ export class CaptureManager {
     const failedBeforeStop = session.status === 'failed';
     session.status = 'stopping';
     session.stoppedAt = new Date().toISOString();
+    session.captureStoppedAt = session.stoppedAt;
 
-    await stopChildProcess(session.portLoggerProc, session.errors, '端口映射');
-    session.portLoggerStopped = true;
-
+    // Stop all capture components in one finalization batch. Each routine
+    // still waits for a clean shutdown, but none is held open by another.
+    const stopTasks = [
+      stopChildProcess(session.portLoggerProc, session.errors, '端口映射')
+        .finally(() => { session.portLoggerStopped = true; }),
+      stopChildProcess(session.tsharkProc, session.errors, 'Wireshark')
+        .finally(() => { session.tsharkStopped = true; }),
+    ];
     if (session.screenRecorder) {
-      try {
-        const result = await session.screenRecorder.stop();
-        session.screenFrameCount = result.frameCount;
-        session.errors.push(...(result.errors || []));
-        session.diagnostics.push(...(result.diagnostics || []));
-      } catch (error) {
-        session.errors.push(`屏幕录制收尾失败: ${error.message}`);
-      }
+      stopTasks.push((async () => {
+        try {
+          const result = await session.screenRecorder.stop();
+          session.screenFrameCount = result.frameCount;
+          session.errors.push(...(result.errors || []));
+          session.diagnostics.push(...(result.diagnostics || []));
+        } catch (error) {
+          session.errors.push(`屏幕录制收尾失败: ${error.message}`);
+        }
+      })());
     }
-
-    await stopChildProcess(session.tsharkProc, session.errors, 'Wireshark');
-    session.tsharkStopped = true;
+    await Promise.all(stopTasks);
 
     if (session.recordPortMapping) {
       try {

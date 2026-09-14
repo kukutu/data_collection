@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 export const WECHAT_MEDIA_WORKFLOW_ID = 'transfer:wechat:send-media';
 export const WECHAT_MEDIA_VALIDATION_MODE = 'wechat_media_send_v1';
@@ -268,15 +269,6 @@ export async function executeWechatMediaTransfer({
         '第一项媒体可选择',
       );
 
-      if (startCapture && iteration === 1) {
-        await runStage(
-          'capture_started',
-          '开始采集微信媒体传输',
-          async () => startCapture(),
-          '媒体选择器已打开，第一次发送前启动采集',
-        );
-      }
-
       const selectedSnapshot = await runStage(
         `first_media_selected${suffix}`,
         `第 ${iteration} 次选择第一项图片或视频`,
@@ -303,6 +295,15 @@ export async function executeWechatMediaTransfer({
         },
         inferFirstMediaKind(pickerSnapshot),
       );
+
+      if (startCapture && iteration === 1) {
+        await runStage(
+          'capture_started',
+          '开始采集微信媒体传输',
+          () => startCaptureBeforeAction(startCapture, sleep),
+          '第一次发送前已预留1秒采集窗口',
+        );
+      }
 
       sentSnapshot = await runStage(
         `media_sent${suffix}`,

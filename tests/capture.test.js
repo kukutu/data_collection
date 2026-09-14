@@ -52,6 +52,29 @@ test('builds package-specific port mapping and HDC pull commands', () => {
   );
 });
 
+test('uses the Harmony app UID for port mapping when process names are hidden', () => {
+  const script = buildPortMappingScript({
+    transport: 'hdc',
+    packageName: 'com.tencent.meeting.app',
+    fallbackPackageName: 'com.huawei.shell_assistant',
+    intervalSec: 0.5,
+  });
+
+  assert.match(script, /pidof "\$APP_CANDIDATE"/);
+  assert.match(script, /APP_FALLBACK_PACKAGE="com\.huawei\.shell_assistant"/);
+  assert.match(script, /bm dump -n "\$APP_CANDIDATE"/);
+  assert.match(script, /UID_SOURCE=/);
+  assert.match(script, /\/proc\/\$PID\/status/);
+  assert.match(script, /\/proc\/net\/tcp/);
+  assert.match(script, /PROTO=\$\{PROC_FILE##\*\/\}/);
+  assert.match(script, /\[ "\$\{8\}" = "\$APP_UID" \]/);
+  assert.match(script, /UID_COLUMNS=8,9,10/);
+  assert.match(script, /echo "\$CURRENT_TIME \$PROTO \$line"/);
+  assert.match(script, /MATCH_MODE=uid-filtered-proc-net/);
+  assert.match(script, /all-device-sockets-fallback/);
+  assert.doesNotMatch(script, /grep -F "com\.tencent\.meeting\.app"/);
+});
+
 test('CaptureManager creates App/Business/Session output and uses Harmony bundle matching', async () => {
   const root = await mkdtemp(join(tmpdir(), 'capture-manager-'));
   const calls = [];
@@ -105,11 +128,16 @@ test('CaptureManager creates App/Business/Session output and uses Harmony bundle
       businessName: '短视频',
       packageName: 'com.ss.android.ugc.aweme',
       bundleName: 'com.ss.hm.ugc.aweme',
+      compatibilityHostBundleName: 'com.huawei.shell_assistant',
       interfaceName: 'WLAN3',
     });
 
     assert.match(started.outputDir, /抖音[\\/]短视频[\\/]\d{8}_\d{2}-\d{2}-\d{2}-/);
     assert.equal(calls.find((call) => call.type === 'logger').options.packageName, 'com.ss.hm.ugc.aweme');
+    assert.equal(
+      calls.find((call) => call.type === 'logger').options.fallbackPackageName,
+      'com.huawei.shell_assistant',
+    );
     assert.equal(calls.find((call) => call.type === 'logger').options.serial, 'harmony-1');
     assert.equal(started.screenRecordingMode, 'harmony_system');
     assert.equal(calls.find((call) => call.type === 'system-screen').options.serial, 'harmony-1');
@@ -119,6 +147,8 @@ test('CaptureManager creates App/Business/Session output and uses Harmony bundle
     assert.equal(await readFile(stopped.mappingFile, 'utf8'), 'TIME, PROTO\n');
     assert.match(await readFile(stopped.reportFile, 'utf8'), /Harmony Bundle: com\.ss\.hm\.ugc\.aweme/);
     assert.match(await readFile(stopped.reportFile, 'utf8'), /Screen Recording Mode: harmony_system/);
+    assert.match(await readFile(stopped.reportFile, 'utf8'), /Capture Components Started At:/);
+    assert.match(await readFile(stopped.reportFile, 'utf8'), /Capture Components Stopped At:/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

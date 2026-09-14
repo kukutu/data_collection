@@ -95,7 +95,7 @@ export function buildKuaishouLiveCorrectedSteps(screen = DEFAULT_SCREEN) {
 
   return [
     pointStep(size, 0.1047, 0.9431, DEFAULT_TIMINGS.afterHomeTapMs),
-    assertState(state(['直播', '发现', '同城', '探索'])),
+    assertState(state(['直播', '发现', '同城', '探索', '热门'])),
     pointStep(size, 0.6234, 0.0802, DEFAULT_TIMINGS.afterLiveTabTapMs, {
       texts: ['直播'],
       required: false,
@@ -702,7 +702,10 @@ function isKuaishouReady(snapshot) {
 function isKuaishouHome(snapshot) {
   return (
     isKuaishouReady(snapshot) &&
-    ['发现', '同城', '直播', '探索'].every((value) =>
+    ['发现', '同城', '直播'].every((value) =>
+      hasSnapshotText(snapshot, new RegExp(`^${value}$`)),
+    ) &&
+    ['探索', '热门'].some((value) =>
       hasSnapshotText(snapshot, new RegExp(`^${value}$`)),
     )
   );

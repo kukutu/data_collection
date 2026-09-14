@@ -1,4 +1,5 @@
 import { decodeRgbaPng } from './tencent-meeting.js';
+import { startCaptureBeforeAction } from './capture-timing.js';
 
 export const FEISHU_QUICK_MEETING_WORKFLOW_ID = 'meeting:feishu:quick-meeting';
 export const FEISHU_JOIN_MEETING_WORKFLOW_ID = 'meeting:feishu:join-meeting';
@@ -14,12 +15,33 @@ export function inspectFeishuMeeting(snapshot) {
   const list = nodes(snapshot?.layout);
   const hasId = id => list.some(n => n.id === id && n.visible !== 'false' && n.bounds !== '[0,0][0,0]');
   const values = snapshot?.values || [];
+  const sharingLabel = values.some(value => /(?:你)?正在共享(?:手机)?屏幕/.test(String(value)));
+  const stoppedSharing = values.some(value => /停止共享(?:屏幕)?/.test(String(value))) ||
+    list.some(node => node.id === 'start_stop_share' && /停止共享/.test(String(node.text || node.originalText || '')));
   return {
     active: hasId('inMeetingPage_root_container') && values.some(v => /^\d{2,}:\d{2}$/.test(v)),
     camera: hasId('camera_p_id') ? hasId('in_meeting_grid_swich_camera_id') || hasId('privacy_camera_icon') : null,
-    sharing: values.includes('你正在共享屏幕') && values.includes('停止共享'),
+    sharing: sharingLabel && stoppedSharing,
     hangup: list.find(n => n.ancestors.includes('right_tool_bar_container') && n.backgroundColor?.toUpperCase() === '#FFF54A45'),
   };
+}
+
+function isFeishuScreenPermissionPrompt(snapshot) {
+  const values = snapshot?.values || [];
+  const hasScreenPrompt = values.some(value =>
+    /允许.*飞书.*屏幕|录制\/投射屏幕|屏幕隐私保护/.test(String(value)),
+  );
+  const hasAllowAction = values.some(value =>
+    /^(允许|始终允许|仅使用期间允许)$/.test(String(value)),
+  );
+  return hasScreenPrompt && hasAllowAction;
+}
+
+function findFeishuScreenPermissionButton(snapshot) {
+  return nodes(snapshot?.layout).find(node =>
+    node.visible !== 'false' &&
+    /^(允许|始终允许|仅使用期间允许)$/.test(String(node.text || node.originalText || '')),
+  );
 }
 
 export function inspectFeishuCameraPixels({ data, width, height, channels }, bounds, screen) {
@@ -136,8 +158,9 @@ async function executeFeishuMeeting({
       }
     } else await waitText('发起会议');
     onStep(2, joining ? '加入飞书会议并等待连接' : '开始飞书会议并等待连接');
-    entered = true;
+    await startCaptureBeforeAction(startCapture, sleep);
     await waitText(joining ? '加入会议' : '开始会议');
+    entered = true;
     let connected = false;
     for (let i = 0; i < 15; i++) {
       await sleep(800);
@@ -161,8 +184,9 @@ async function executeFeishuMeeting({
       for (let i = 0; i < 12; i++) {
         await sleep(700);
         s = await snapshot();
-        if (s.values.includes('允许“飞书”使用你的屏幕？') && s.values.includes('允许')) {
-          await tapText('允许', s);
+        if (isFeishuScreenPermissionPrompt(s)) {
+          const permissionButton = findFeishuScreenPermissionButton(s);
+          if (permissionButton) await tapNode(permissionButton);
           continue;
         }
         if (inspectFeishuMeeting(s).sharing) { shared = true; break; }
@@ -177,7 +201,6 @@ async function executeFeishuMeeting({
       throw new Error('采集前飞书会议参数状态验证失败');
     }
     onStep(4, '飞书会议状态已就绪，开始计时和采集');
-    await startCapture?.();
     const started = now();
     while (now() - started < durationMs) {
       await sleep(Math.min(5000, durationMs - (now() - started)));
